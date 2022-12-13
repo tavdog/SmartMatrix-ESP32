@@ -86,6 +86,8 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             bufferPos = 0;
             WebPDataClear(&webp_data);
             client.publish(applet_rts_topic, "OK");
+        }else if(strncmp((char *)payload,"PING",4) == 0) {
+            client.publish(applet_rts_topic, "PONG");
         } else if(!recv_length) {
             mqtt_timeout_lastTime = millis();
             webp_data.size = atoi((char *)payload);
