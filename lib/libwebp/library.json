@@ -1,0 +1,11 @@
+{
+    "name": "libwebp",
+    "build": {
+        "unflags": [
+            "-DHAVE_CONFIG_H"
+        ],
+        "flags": [
+            "-I."
+        ]
+    }
+}
