@@ -216,27 +216,26 @@ void loop() {
                 if(millis() - last_frame_time > last_frame_duration) {
                     WebPDemuxGetFrame(demux, current_frame, &iter);
 
-                    if(iter.width == MATRIX_WIDTH && iter.height == MATRIX_HEIGHT) {
-                        //replace entire buffer on screen.
-                        WebPDecodeRGBInto(iter.fragment.bytes, iter.fragment.size, currentFrame, MATRIX_HEIGHT * MATRIX_WIDTH * 3, MATRIX_WIDTH * 3);
-                    } else {
-                        uint8_t * fragmentTmp = (uint8_t *) malloc(iter.width*iter.height*4);
-                        WebPDecodeRGBAInto(iter.fragment.bytes, iter.fragment.size, fragmentTmp, iter.width * iter.height * 4, iter.width * 4);
+                    uint8_t * fragmentTmp = (uint8_t *) malloc(iter.width*iter.height*4);
+                    WebPDecodeRGBAInto(iter.fragment.bytes, iter.fragment.size, fragmentTmp, iter.width * iter.height * 4, iter.width * 4);
 
-                        int px = 0;
-                        for(int y = iter.y_offset; y < (iter.y_offset + iter.height); y++) {
-                            for(int x = iter.x_offset; x < (iter.x_offset + iter.width); x++) {
-                                //go pixel by pixel.
-                                int pixelOffsetCF = ((y*MATRIX_WIDTH)+x)*3;
-                                int pixelOffsetFT = px*4;
-                                if(fragmentTmp[pixelOffsetFT+3] == 255) {
-                                    memcpy(currentFrame+pixelOffsetCF, fragmentTmp+pixelOffsetFT, 3);
-                                }
-                                px++;
+                    int px = 0;
+                    for(int y = iter.y_offset; y < (iter.y_offset + iter.height); y++) {
+                        for(int x = iter.x_offset; x < (iter.x_offset + iter.width); x++) {
+                            //go pixel by pixel.
+                            int pixelOffsetCF = ((y*MATRIX_WIDTH)+x)*3;
+                            int pixelOffsetFT = px*4;
+
+                            int alphaValue = fragmentTmp[pixelOffsetFT+3];
+                            
+                            if(alphaValue == 255) {
+                                memcpy(currentFrame+pixelOffsetCF, fragmentTmp+pixelOffsetFT, 3);
                             }
+                            
+                            px++;
                         }
-                        free(fragmentTmp);
                     }
+                    free(fragmentTmp);
 
                     //currentframe is good to send to screen now
                     for(int y = 0; y < MATRIX_HEIGHT; y++) {
