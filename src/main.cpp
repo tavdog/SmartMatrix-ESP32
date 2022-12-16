@@ -12,7 +12,15 @@
 
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include <Adafruit_TSL2561_U.h>
+
+#define NO_OTA_PORT
+#include <ArduinoOTA.h>
+
 MatrixPanel_I2S_DMA dma_display = MatrixPanel_I2S_DMA();
+Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
 
 char mqtt_server[80] = "**REDACTED**";
 char mqtt_user[80] = "**REDACTED**";
@@ -24,11 +32,13 @@ char hostName[80];
 char applet_topic[22];
 char applet_rts_topic[26];
 char brightness_topic[22];
+char lastProgText[12];
 
 WebPData webp_data;
 
 int currentMode = WELCOME;
-int brightness = -1;
+int desiredBrightness = 20;
+int currentBrightness = 20;
 unsigned long bufferPos;
 bool recv_length = false;
 
@@ -50,6 +60,8 @@ uint8_t * currentFrame;
 unsigned long mqtt_timeout_lastTime = 0;
 unsigned long last_frame_duration = 0;
 unsigned long last_frame_time = 0;
+unsigned long last_check_tsl_time = 0;
+unsigned long last_adjust_brightness_time = 0;
 
 void marqueeText(const String &buf, uint16_t color) {
     dma_display.clearScreen();
@@ -136,9 +148,20 @@ void configModeCallback (WiFiManager *wm) {
 void setup() {
     Serial.begin(115200);
     dma_display.begin();
-    dma_display.setBrightness8(20); //0-255
+    dma_display.setBrightness8(currentBrightness); //0-255
     dma_display.setLatBlanking(4);
     dma_display.clearScreen();
+
+    Wire.begin();
+    if(!tsl.begin())
+    {
+        /* There was a problem detecting the TSL2561 ... check your connections */
+        Serial.print("Ooops, no TSL2561 detected ... Check your wiring or I2C ADDR!");
+        while(1);
+    }
+
+    tsl.enableAutoRange(true);            /* Auto-gain ... switches automatically between 1x and 16x */
+    tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);      /* fast but low resolution */
 
     WiFiManager wifiManager;
 
@@ -160,6 +183,50 @@ void setup() {
     if (!wifiManager.autoConnect(hostName)) {
         delay(3000);
     }
+
+    ArduinoOTA.setHostname(hostName);
+    ArduinoOTA.setMdnsEnabled(true);
+    //ArduinoOTA.setPassword("PLM");
+
+    ArduinoOTA.onStart([]() {
+        currentMode = NONE;
+
+        //Clear and reset all libwebp buffers.
+        WebPDataClear(&webp_data);
+        WebPDemuxReleaseIterator(&iter);
+        WebPDemuxDelete(demux);
+
+        //Free the frame buffers if necessary.
+        if(currentFrame != nullptr) {
+            free(currentFrame);
+        }
+
+        marqueeText("OTA: Start", dma_display.color565(0,255,0));
+        delay(2500);
+    });
+    ArduinoOTA.onEnd([]() {
+        marqueeText("OTA: Done", dma_display.color565(0,255,0));
+        delay(2500);
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        char progText[12];
+        sprintf(progText, "OTA: %u%%", (progress / (total / 100)));
+
+        if(strcmp(progText, lastProgText) != 0) {
+            marqueeText(progText, dma_display.color565(255,255,0));
+            strcpy(lastProgText, progText);
+        }
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        Serial.printf("Error[%u]: ", error);
+        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+        else if (error == OTA_END_ERROR) Serial.println("End Failed");
+    });
+
+    ArduinoOTA.begin();
 
     marqueeText("wait", dma_display.color565(0,255,255));
 
@@ -187,14 +254,43 @@ void loop() {
 
     client.loop();
 
+    ArduinoOTA.handle();
+
     if (!client.connected()) {
         marqueeText("mqtt", dma_display.color565(255,0,0));
         mqttReconnect(mqtt_user, mqtt_password);
     }
 
-    if (brightness > 0) {
-        dma_display.setBrightness8((brightness*255) / 100);
-        brightness = -1;
+    //Update desired brightness
+    if (millis() - last_check_tsl_time > 500) {
+        sensors_event_t event;
+        tsl.getEvent(&event);
+
+        if (event.light == 0) {
+            //low brightness
+            desiredBrightness = 40;
+        } else if(event.light > 100) {
+            //high brightness
+            desiredBrightness = 255;
+        } else if(event.light > 50) {
+            //low brightness
+            desiredBrightness = 120;
+        } else {
+            //low brightness
+            desiredBrightness = 40;
+        }
+        
+        last_check_tsl_time = millis();
+    }
+
+    if (millis() - last_adjust_brightness_time > 10 && currentBrightness != desiredBrightness) {
+        if(currentBrightness > desiredBrightness) {
+            currentBrightness--;
+        } else {
+            currentBrightness++;
+        }
+        dma_display.setBrightness8(currentBrightness);
+        last_adjust_brightness_time = millis();
     }
 
     if (currentMode == WELCOME) {
