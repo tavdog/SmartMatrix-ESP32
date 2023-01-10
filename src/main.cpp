@@ -149,7 +149,7 @@ void setup() {
     Serial.begin(115200);
     dma_display.begin();
     dma_display.setBrightness8(currentBrightness); //0-255
-    dma_display.setLatBlanking(4);
+    dma_display.setLatBlanking(3);
     dma_display.clearScreen();
 
     Wire.begin();
@@ -170,9 +170,6 @@ void setup() {
     esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
     sprintf(macFull, "%02X%02X%02X", baseMac[3], baseMac[4], baseMac[5]);
     snprintf(hostName, 11, PSTR("PLM-%s"),macFull);
-
-    marqueeText(macFull, dma_display.color565(0,255,255));
-    delay(1500);
 
     WiFi.setHostname(hostName);
     WiFi.setAutoReconnect(true);
@@ -228,8 +225,6 @@ void setup() {
 
     ArduinoOTA.begin();
 
-    marqueeText("wait", dma_display.color565(0,255,255));
-
     snprintf_P(applet_topic, 22, PSTR("%s/%s/rx"), TOPIC_PREFIX, macFull);
     snprintf_P(applet_rts_topic, 26, PSTR("%s/%s/tx"), TOPIC_PREFIX, macFull);
 
@@ -266,18 +261,14 @@ void loop() {
         sensors_event_t event;
         tsl.getEvent(&event);
 
-        if (event.light == 0) {
-            //low brightness
-            desiredBrightness = 40;
-        } else if(event.light > 100) {
-            //high brightness
-            desiredBrightness = 255;
-        } else if(event.light > 50) {
+        if(event.light > 50) {
             //low brightness
             desiredBrightness = 120;
-        } else {
+        } else if(event.light > 5) {
             //low brightness
-            desiredBrightness = 40;
+            desiredBrightness = 30;
+        } else {
+            desiredBrightness = 0;
         }
         
         last_check_tsl_time = millis();
@@ -310,42 +301,45 @@ void loop() {
         } else {
             if(webp_flags & ANIMATION_FLAG) {
                 if(millis() - last_frame_time > last_frame_duration) {
-                    WebPDemuxGetFrame(demux, current_frame, &iter);
+                    if(WebPDemuxGetFrame(demux, current_frame, &iter)) {
 
-                    uint8_t * fragmentTmp = (uint8_t *) malloc(iter.width*iter.height*4);
-                    WebPDecodeRGBAInto(iter.fragment.bytes, iter.fragment.size, fragmentTmp, iter.width * iter.height * 4, iter.width * 4);
+                        uint8_t * fragmentTmp = (uint8_t *) malloc(iter.width*iter.height*4);
+                        WebPDecodeRGBAInto(iter.fragment.bytes, iter.fragment.size, fragmentTmp, iter.width * iter.height * 4, iter.width * 4);
 
-                    int px = 0;
-                    for(int y = iter.y_offset; y < (iter.y_offset + iter.height); y++) {
-                        for(int x = iter.x_offset; x < (iter.x_offset + iter.width); x++) {
-                            //go pixel by pixel.
-                            int pixelOffsetCF = ((y*MATRIX_WIDTH)+x)*3;
-                            int pixelOffsetFT = px*4;
+                        int px = 0;
+                        for(int y = iter.y_offset; y < (iter.y_offset + iter.height); y++) {
+                            for(int x = iter.x_offset; x < (iter.x_offset + iter.width); x++) {
+                                //go pixel by pixel.
+                                int pixelOffsetCF = ((y*MATRIX_WIDTH)+x)*3;
+                                int pixelOffsetFT = px*4;
 
-                            int alphaValue = fragmentTmp[pixelOffsetFT+3];
-                            
-                            if(alphaValue == 255) {
-                                memcpy(currentFrame+pixelOffsetCF, fragmentTmp+pixelOffsetFT, 3);
+                                int alphaValue = fragmentTmp[pixelOffsetFT+3];
+                                
+                                if(alphaValue == 255) {
+                                    memcpy(currentFrame+pixelOffsetCF, fragmentTmp+pixelOffsetFT, 3);
+                                }
+                                
+                                px++;
                             }
-                            
-                            px++;
                         }
-                    }
-                    free(fragmentTmp);
+                        free(fragmentTmp);
 
-                    //currentframe is good to send to screen now
-                    for(int y = 0; y < MATRIX_HEIGHT; y++) {
-                        for(int x = 0; x < MATRIX_WIDTH; x++) {
-                            int pixBitStart = ((y*MATRIX_WIDTH)+x)*3;
-                            dma_display.writePixel(x,y, dma_display.color565(currentFrame[pixBitStart],currentFrame[pixBitStart+1],currentFrame[pixBitStart+2]));
+                        //currentframe is good to send to screen now
+                        for(int y = 0; y < MATRIX_HEIGHT; y++) {
+                            for(int x = 0; x < MATRIX_WIDTH; x++) {
+                                int pixBitStart = ((y*MATRIX_WIDTH)+x)*3;
+                                dma_display.writePixel(x,y, dma_display.color565(currentFrame[pixBitStart],currentFrame[pixBitStart+1],currentFrame[pixBitStart+2]));
+                            }
                         }
-                    }
 
-                    last_frame_time = millis();
-                    last_frame_duration = iter.duration;
-                    current_frame++;
-                    if(current_frame > frame_count) {
-                        current_frame = 1;
+                        last_frame_time = millis();
+                        last_frame_duration = iter.duration;
+                        current_frame++;
+                        if(current_frame > frame_count) {
+                            current_frame = 1;
+                        }
+                    } else {
+                        currentMode = NONE;
                     }
                 }
             } else {
