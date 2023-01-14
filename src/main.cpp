@@ -132,12 +132,15 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 }
 
 
-void mqttReconnect(char* mqtt_user, char* mqtt_password) {
-    while (!client.connected()) {
-        if (client.connect(hostName, mqtt_user, mqtt_password)) {
-            client.subscribe(brightness_topic);
-            client.subscribe(applet_topic);
-        }
+void mqttReconnect() {
+    client.disconnect();
+    wifiClient.setInsecure();
+    client.setServer(mqtt_server, 8883);
+    client.connect(hostName, mqtt_user, mqtt_password);
+    client.setCallback(mqttCallback);
+    if (client.connected()) {
+        client.subscribe(brightness_topic);
+        client.subscribe(applet_topic);
     }
 }
 
@@ -253,7 +256,7 @@ void loop() {
 
     if (!client.connected()) {
         marqueeText("mqtt", dma_display.color565(255,0,0));
-        mqttReconnect(mqtt_user, mqtt_password);
+        mqttReconnect();
     }
 
     //Update desired brightness
@@ -302,42 +305,41 @@ void loop() {
             if(webp_flags & ANIMATION_FLAG) {
                 if(millis() - last_frame_time > last_frame_duration) {
                     if(WebPDemuxGetFrame(demux, current_frame, &iter)) {
-
                         uint8_t * fragmentTmp = (uint8_t *) malloc(iter.width*iter.height*4);
-                        WebPDecodeRGBAInto(iter.fragment.bytes, iter.fragment.size, fragmentTmp, iter.width * iter.height * 4, iter.width * 4);
+                        if(WebPDecodeRGBAInto(iter.fragment.bytes, iter.fragment.size, fragmentTmp, iter.width * iter.height * 4, iter.width * 4) != NULL) {
+                            int px = 0;
+                            for(int y = iter.y_offset; y < (iter.y_offset + iter.height); y++) {
+                                for(int x = iter.x_offset; x < (iter.x_offset + iter.width); x++) {
+                                    //go pixel by pixel.
+                                    int pixelOffsetCF = ((y*MATRIX_WIDTH)+x)*3;
+                                    int pixelOffsetFT = px*4;
 
-                        int px = 0;
-                        for(int y = iter.y_offset; y < (iter.y_offset + iter.height); y++) {
-                            for(int x = iter.x_offset; x < (iter.x_offset + iter.width); x++) {
-                                //go pixel by pixel.
-                                int pixelOffsetCF = ((y*MATRIX_WIDTH)+x)*3;
-                                int pixelOffsetFT = px*4;
-
-                                int alphaValue = fragmentTmp[pixelOffsetFT+3];
-                                
-                                if(alphaValue == 255) {
-                                    memcpy(currentFrame+pixelOffsetCF, fragmentTmp+pixelOffsetFT, 3);
+                                    int alphaValue = fragmentTmp[pixelOffsetFT+3];
+                                    
+                                    if(alphaValue == 255) {
+                                        memcpy(currentFrame+pixelOffsetCF, fragmentTmp+pixelOffsetFT, 3);
+                                    }
+                                    
+                                    px++;
                                 }
-                                
-                                px++;
+                            }
+
+                            //currentframe is good to send to screen now
+                            for(int y = 0; y < MATRIX_HEIGHT; y++) {
+                                for(int x = 0; x < MATRIX_WIDTH; x++) {
+                                    int pixBitStart = ((y*MATRIX_WIDTH)+x)*3;
+                                    dma_display.writePixel(x,y, dma_display.color565(currentFrame[pixBitStart],currentFrame[pixBitStart+1],currentFrame[pixBitStart+2]));
+                                }
+                            }
+
+                            last_frame_time = millis();
+                            last_frame_duration = iter.duration;
+                            current_frame++;
+                            if(current_frame > frame_count) {
+                                current_frame = 1;
                             }
                         }
                         free(fragmentTmp);
-
-                        //currentframe is good to send to screen now
-                        for(int y = 0; y < MATRIX_HEIGHT; y++) {
-                            for(int x = 0; x < MATRIX_WIDTH; x++) {
-                                int pixBitStart = ((y*MATRIX_WIDTH)+x)*3;
-                                dma_display.writePixel(x,y, dma_display.color565(currentFrame[pixBitStart],currentFrame[pixBitStart+1],currentFrame[pixBitStart+2]));
-                            }
-                        }
-
-                        last_frame_time = millis();
-                        last_frame_duration = iter.duration;
-                        current_frame++;
-                        if(current_frame > frame_count) {
-                            current_frame = 1;
-                        }
                     } else {
                         currentMode = NONE;
                     }
