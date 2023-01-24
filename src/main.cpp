@@ -152,7 +152,7 @@ void setup() {
     Serial.begin(115200);
     dma_display.begin();
     dma_display.setBrightness8(currentBrightness); //0-255
-    dma_display.setLatBlanking(3);
+    dma_display.setLatBlanking(1);
     dma_display.clearScreen();
 
     Wire.begin();
@@ -185,7 +185,6 @@ void setup() {
     }
 
     ArduinoOTA.setHostname(hostName);
-    ArduinoOTA.setMdnsEnabled(true);
     //ArduinoOTA.setPassword("PLM");
 
     ArduinoOTA.onStart([]() {
@@ -266,10 +265,10 @@ void loop() {
 
         if(event.light > 50) {
             //low brightness
-            desiredBrightness = 120;
+            desiredBrightness = 80;
         } else if(event.light > 5) {
             //low brightness
-            desiredBrightness = 30;
+            desiredBrightness = 20;
         } else {
             desiredBrightness = 0;
         }
