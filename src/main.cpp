@@ -133,15 +133,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
 
 
 void mqttReconnect() {
-    client.disconnect();
-    wifiClient.setInsecure();
-    client.setServer(mqtt_server, 8883);
-    client.connect(hostName, mqtt_user, mqtt_password);
-    client.setCallback(mqttCallback);
-    if (client.connected()) {
-        client.subscribe(brightness_topic);
-        client.subscribe(applet_topic);
-    }
+    ESP.restart();
 }
 
 void configModeCallback (WiFiManager *wm) {
@@ -158,8 +150,6 @@ void setup() {
     Wire.begin();
     if(!tsl.begin())
     {
-        /* There was a problem detecting the TSL2561 ... check your connections */
-        Serial.print("Ooops, no TSL2561 detected ... Check your wiring or I2C ADDR!");
         while(1);
     }
 
@@ -217,12 +207,8 @@ void setup() {
         }
     });
     ArduinoOTA.onError([](ota_error_t error) {
-        Serial.printf("Error[%u]: ", error);
-        if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
-        else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
-        else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
-        else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
-        else if (error == OTA_END_ERROR) Serial.println("End Failed");
+        marqueeText("OTA: error", dma_display.color565(0,255,0));
+        delay(2500);
     });
 
     ArduinoOTA.begin();
