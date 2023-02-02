@@ -9,6 +9,7 @@
 #include <webp/demux.h>
 
 #include <constants.h>
+#include "secrets.h"
 
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 
@@ -21,10 +22,6 @@
 
 MatrixPanel_I2S_DMA dma_display = MatrixPanel_I2S_DMA();
 Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
-
-char mqtt_server[80] = "**REDACTED**";
-char mqtt_user[80] = "**REDACTED**";
-char mqtt_password[80] = "**REDACTED**";
 
 boolean newapplet = false;
 
@@ -162,7 +159,7 @@ void setup() {
     char macFull[6];
     esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
     sprintf(macFull, "%02X%02X%02X", baseMac[3], baseMac[4], baseMac[5]);
-    snprintf(hostName, 11, PSTR("PLM-%s"),macFull);
+    snprintf(hostName, 11, PSTR("SM-%s"),macFull);
 
     WiFi.setHostname(hostName);
     WiFi.setAutoReconnect(true);

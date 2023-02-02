@@ -1,4 +1,4 @@
-**REDACTED**
+SmartMatrix
 
 supports
 tsl2561
