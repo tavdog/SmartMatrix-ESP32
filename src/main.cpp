@@ -180,6 +180,7 @@ void setup() {
     dma_display.setBrightness8(currentBrightness); //0-255
     dma_display.setLatBlanking(1);
     dma_display.clearScreen();
+    marqueeText("SmartMx", dma_display.color565(0,255,255));
 
     #ifndef TIDBYT
     Wire.begin();
@@ -261,13 +262,15 @@ void setup() {
         client.subscribe(applet_topic);
         client.publish(applet_rts_topic, "DEVICE_BOOT");
     }
+
+    marqueeText("ready..", dma_display.color565(255,255,255));
 }
 
 void loop() {
     // Try to reconnect to wifi if connection lost
     while (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0,0,0,0)) {
         WiFi.reconnect();
-        marqueeText("wi-fi", dma_display.color565(255,0,0));
+        marqueeText("wi-fi_nc", dma_display.color565(255,0,0));
         delay(10000);
     }
 
@@ -276,7 +279,7 @@ void loop() {
     ArduinoOTA.handle();
 
     if (!client.connected()) {
-        marqueeText("mqtt", dma_display.color565(255,0,0));
+        marqueeText("mqtt_nc", dma_display.color565(255,0,0));
         mqttReconnect();
     }
 
