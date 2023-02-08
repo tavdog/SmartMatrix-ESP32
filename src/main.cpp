@@ -199,7 +199,7 @@ void setup() {
     char macFull[6];
     esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
     sprintf(macFull, "%02X%02X%02X", baseMac[3], baseMac[4], baseMac[5]);
-    snprintf(hostName, 11, PSTR("SM-%s"),macFull);
+    snprintf(hostName, 11, PSTR("SmX-%s"),macFull);
 
     WiFi.setHostname(hostName);
     WiFi.setAutoReconnect(true);
@@ -212,7 +212,7 @@ void setup() {
     }
 
     ArduinoOTA.setHostname(hostName);
-    //ArduinoOTA.setPassword("PLM");
+    //ArduinoOTA.setPassword("SmX");
 
     ArduinoOTA.onStart([]() {
         currentMode = NONE;
@@ -254,8 +254,8 @@ void setup() {
     snprintf_P(applet_rts_topic, 26, PSTR("%s/%s/tx"), TOPIC_PREFIX, macFull);
 
     wifiClient.setInsecure();
-    client.setServer(mqtt_server, 8883);
-    client.connect(hostName, mqtt_user, mqtt_password);
+    client.setServer(MQTT_HOST, MQTT_PORT);
+    client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
     client.setCallback(mqttCallback);
 
     if (client.connected()) {
