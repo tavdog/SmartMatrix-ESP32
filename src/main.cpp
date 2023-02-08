@@ -1,5 +1,5 @@
 //#define TIDBYT
-//#define MQTT_SSL
+#define MQTT_SSL
 
 #include <FS.h>
 #include "SPIFFS.h"
@@ -100,9 +100,6 @@ uint32_t webp_flags;
 uint32_t current_frame = 1;
 uint32_t frame_count;
 
-//Frame buffers for animated WebP
-uint8_t * currentFrame;
-
 unsigned long mqtt_timeout_lastTime = 0;
 unsigned long last_frame_duration = 0;
 unsigned long last_frame_time = 0;
@@ -143,11 +140,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                     WebPDataClear(&webp_data);
                     WebPDemuxReleaseIterator(&iter);
                     WebPDemuxDelete(demux);
-
-                    //Free the frame buffers if necessary.
-                    if(currentFrame != nullptr) {
-                        free(currentFrame);
-                    }
 
                     //setup webp buffer and populate from temporary buffer
                     webp_data.size = bufsize;
@@ -198,6 +190,7 @@ void setup() {
     Wire.begin();
     if(!tsl.begin())
     {
+        marqueeText("NO ALS", dma_display.color565(255,0,0));
         while(1);
     }
 
@@ -233,11 +226,6 @@ void setup() {
         WebPDataClear(&webp_data);
         WebPDemuxReleaseIterator(&iter);
         WebPDemuxDelete(demux);
-
-        //Free the frame buffers if necessary.
-        if(currentFrame != nullptr) {
-            free(currentFrame);
-        }
 
         marqueeText("OTA: Start", dma_display.color565(0,255,0));
         delay(2500);
@@ -285,7 +273,7 @@ void loop() {
     // Try to reconnect to wifi if connection lost
     while (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0,0,0,0)) {
         WiFi.reconnect();
-        marqueeText("wi-fi_nc", dma_display.color565(255,0,0));
+        marqueeText("Wi-Fi", dma_display.color565(255,0,0));
         delay(10000);
     }
 
@@ -294,7 +282,7 @@ void loop() {
     ArduinoOTA.handle();
 
     if (!client.connected()) {
-        marqueeText("mqtt_nc", dma_display.color565(255,0,0));
+        marqueeText("MQTT", dma_display.color565(255,0,0));
         mqttReconnect();
     }
 
@@ -328,17 +316,11 @@ void loop() {
     }
     #endif
 
-    if (currentMode == WELCOME) {
-        currentMode = NONE;
-    }
-
     if (currentMode == APPLET) {
         if(newapplet) {
             demux = WebPDemux(&webp_data);
             frame_count = WebPDemuxGetI(demux, WEBP_FF_FRAME_COUNT);
             webp_flags = WebPDemuxGetI(demux, WEBP_FF_FORMAT_FLAGS);
-
-            currentFrame = (uint8_t *) malloc(MATRIX_HEIGHT * MATRIX_WIDTH * 3);
 
             newapplet = false;
             current_frame = 1;
@@ -352,24 +334,15 @@ void loop() {
                             for(int y = iter.y_offset; y < (iter.y_offset + iter.height); y++) {
                                 for(int x = iter.x_offset; x < (iter.x_offset + iter.width); x++) {
                                     //go pixel by pixel.
-                                    int pixelOffsetCF = ((y*MATRIX_WIDTH)+x)*3;
-                                    int pixelOffsetFT = px*4;
 
+                                    int pixelOffsetFT = px*4;
                                     int alphaValue = fragmentTmp[pixelOffsetFT+3];
                                     
                                     if(alphaValue == 255) {
-                                        memcpy(currentFrame+pixelOffsetCF, fragmentTmp+pixelOffsetFT, 3);
+                                        dma_display.writePixel(x,y, dma_display.color565(fragmentTmp[pixelOffsetFT],fragmentTmp[pixelOffsetFT+1],fragmentTmp[pixelOffsetFT+2]));
                                     }
                                     
                                     px++;
-                                }
-                            }
-
-                            //currentframe is good to send to screen now
-                            for(int y = 0; y < MATRIX_HEIGHT; y++) {
-                                for(int x = 0; x < MATRIX_WIDTH; x++) {
-                                    int pixBitStart = ((y*MATRIX_WIDTH)+x)*3;
-                                    dma_display.writePixel(x,y, dma_display.color565(currentFrame[pixBitStart],currentFrame[pixBitStart+1],currentFrame[pixBitStart+2]));
                                 }
                             }
 
