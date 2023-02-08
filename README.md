@@ -7,3 +7,7 @@ SmartMatrix-ESP32 is the firmware for the internet connected display.
 ## Requires the [SmartMatrixServer](https://github.com/acvigue/SmartMatrixServer) to function.
 
 Before the project will compile, fill in `secrets.h.example` with your MQTT credentials and move the file to `secrets.h`
+
+## Tidbyt
+
+If you're compiling this for a Tidbyt device, uncomment the `#define TIDBYT` line in main.cpp

@@ -1,3 +1,5 @@
+//#define TIDBYT
+
 #include <FS.h>
 #include "SPIFFS.h"
 
@@ -13,15 +15,50 @@
 
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 
+#ifndef TIDBYT
 #include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_TSL2561_U.h>
+#endif
 
 #define NO_OTA_PORT
 #include <ArduinoOTA.h>
 
+#ifdef TIDBYT
+
+// Change these to whatever suits
+#define R1_PIN 21
+#define G1_PIN 2
+#define B1_PIN 22
+#define R2_PIN 23
+#define G2_PIN 4
+#define B2_PIN 27
+#define A_PIN 26
+#define B_PIN 5
+#define C_PIN 25
+#define D_PIN 18
+#define E_PIN -1 // required for 1/32 scan panels, like 64x64px. Any available pin would do, i.e. IO32
+#define LAT_PIN 19
+#define OE_PIN 32
+#define CLK_PIN 33
+
+HUB75_I2S_CFG::i2s_pins _pins={R1_PIN, G1_PIN, B1_PIN, R2_PIN, G2_PIN, B2_PIN, A_PIN, B_PIN, C_PIN, D_PIN, E_PIN, LAT_PIN, OE_PIN, CLK_PIN};
+
+HUB75_I2S_CFG mxconfig(
+	64, // Module width
+	32, // Module height
+	1, // chain length
+	_pins // pin mapping
+);
+
+MatrixPanel_I2S_DMA dma_display = MatrixPanel_I2S_DMA(mxconfig);
+#else
 MatrixPanel_I2S_DMA dma_display = MatrixPanel_I2S_DMA();
+#endif
+
+#ifndef TIDBYT
 Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
+#endif
 
 boolean newapplet = false;
 
@@ -35,7 +72,7 @@ WebPData webp_data;
 
 int currentMode = WELCOME;
 int desiredBrightness = 20;
-int currentBrightness = 20;
+int currentBrightness = 100;
 unsigned long bufferPos;
 bool recv_length = false;
 
@@ -144,6 +181,7 @@ void setup() {
     dma_display.setLatBlanking(1);
     dma_display.clearScreen();
 
+    #ifndef TIDBYT
     Wire.begin();
     if(!tsl.begin())
     {
@@ -152,6 +190,7 @@ void setup() {
 
     tsl.enableAutoRange(true);            /* Auto-gain ... switches automatically between 1x and 16x */
     tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);      /* fast but low resolution */
+    #endif
 
     WiFiManager wifiManager;
 
@@ -241,6 +280,7 @@ void loop() {
         mqttReconnect();
     }
 
+    #ifndef TIDBYT
     //Update desired brightness
     if (millis() - last_check_tsl_time > 500) {
         sensors_event_t event;
@@ -268,6 +308,7 @@ void loop() {
         dma_display.setBrightness8(currentBrightness);
         last_adjust_brightness_time = millis();
     }
+    #endif TIDBYT
 
     if (currentMode == WELCOME) {
         currentMode = NONE;
