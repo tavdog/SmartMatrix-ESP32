@@ -1,4 +1,5 @@
 //#define TIDBYT
+//#define MQTT_SSL
 
 #include <FS.h>
 #include "SPIFFS.h"
@@ -6,7 +7,13 @@
 #include <Arduino.h>
 #include <WiFiManager.h>
 #include <PubSubClient.h>
+
+#ifdef MQTT_SSL
 #include <WiFiClientSecure.h>
+#else
+#include <WiFiClient.h>
+#endif
+
 #include <time.h>
 #include <webp/demux.h>
 
@@ -76,7 +83,12 @@ int currentBrightness = 100;
 unsigned long bufferPos;
 bool recv_length = false;
 
+#ifdef MQTT_SSL
 WiFiClientSecure wifiClient;
+#else
+WiFiClient wifiClient;
+#endif
+
 PubSubClient client(wifiClient);
 
 uint8_t *tmpbuf;
@@ -253,7 +265,10 @@ void setup() {
     snprintf_P(applet_topic, 22, PSTR("%s/%s/rx"), TOPIC_PREFIX, macFull);
     snprintf_P(applet_rts_topic, 26, PSTR("%s/%s/tx"), TOPIC_PREFIX, macFull);
 
+    #ifdef MQTT_SSL
     wifiClient.setInsecure();
+    #endif
+
     client.setServer(MQTT_HOST, MQTT_PORT);
     client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
     client.setCallback(mqttCallback);
@@ -311,7 +326,7 @@ void loop() {
         dma_display.setBrightness8(currentBrightness);
         last_adjust_brightness_time = millis();
     }
-    #endif TIDBYT
+    #endif
 
     if (currentMode == WELCOME) {
         currentMode = NONE;
