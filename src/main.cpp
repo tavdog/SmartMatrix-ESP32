@@ -1,5 +1,3 @@
-//#define TIDBYT
-#define MQTT_SSL
 
 #include <FS.h>
 #include "SPIFFS.h"
@@ -122,9 +120,10 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             mqtt_timeout_lastTime = millis();
             recv_length = false;
             bufferPos = 0;
+            Serial.println("got start");
 
             client.publish(applet_rts_topic, "OK");
-        }else if(strncmp((char *)payload,"PING",4) == 0) {
+        } else if(strncmp((char *)payload,"PING",4) == 0) {
             client.publish(applet_rts_topic, "PONG");
         } else if(!recv_length) {
             mqtt_timeout_lastTime = millis();
@@ -132,10 +131,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             tmpbuf = (uint8_t *) malloc(bufsize);
             recv_length = true;
             client.publish(applet_rts_topic, "OK");
+            Serial.println("got length");
+
         } else {
             if(strncmp((char *)payload,"FINISH",6) == 0) {
                 mqtt_timeout_lastTime = 0;
+                Serial.println("got finish");
                 if (strncmp((const char*)tmpbuf, "RIFF", 4) == 0) {
+                    Serial.println("got riff");
                     //Clear and reset all libwebp buffers.
                     WebPDataClear(&webp_data);
                     WebPDemuxReleaseIterator(&iter);
@@ -163,6 +166,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                 mqtt_timeout_lastTime = millis();
                 memcpy((void *)(tmpbuf+bufferPos), payload, length);
                 bufferPos += length;
+                Serial.println("got data");
                 client.publish(applet_rts_topic, "OK");
             }
         }
@@ -180,6 +184,17 @@ void configModeCallback (WiFiManager *wm) {
 
 void setup() {
     Serial.begin(115200);
+
+    // starting wifi here increases reliability of connecting to wifi and not erroneously going into wifimanager
+    uint8_t baseMac[6];
+    char macFull[6];
+    esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
+    sprintf(macFull, "%02X%02X%02X", baseMac[3], baseMac[4], baseMac[5]);
+    snprintf(hostName, 11, PSTR("SmX-%s"),macFull);
+    WiFi.setHostname(hostName);
+    WiFi.setAutoReconnect(true);
+    WiFi.begin(); 
+
     dma_display.begin();
     dma_display.setBrightness8(currentBrightness); //0-255
     dma_display.setLatBlanking(1);
@@ -200,15 +215,7 @@ void setup() {
 
     WiFiManager wifiManager;
 
-    uint8_t baseMac[6];
-    char macFull[6];
-    esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
-    sprintf(macFull, "%02X%02X%02X", baseMac[3], baseMac[4], baseMac[5]);
-    snprintf(hostName, 11, PSTR("SmX-%s"),macFull);
-
-    WiFi.setHostname(hostName);
-    WiFi.setAutoReconnect(true);
-
+    delay(5000); // wait 5 secs for connection before calling autoconnect.
     wifiManager.setTimeout(180);
     wifiManager.setCleanConnect(true);
 
@@ -262,7 +269,9 @@ void setup() {
     client.setCallback(mqttCallback);
 
     if (client.connected()) {
+        Serial.println("Subscribing to : " + String(applet_topic));
         client.subscribe(applet_topic);
+        Serial.println("Publishing BOOT to : " + String(applet_rts_topic));
         client.publish(applet_rts_topic, "DEVICE_BOOT");
     }
 
