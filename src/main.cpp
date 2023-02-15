@@ -83,7 +83,7 @@ int desiredBrightness = 20;
 int currentBrightness = 100;
 unsigned long bufferPos;
 bool recv_length = false;
-bool mqttShouldReconnect = true;
+bool otaInProgress = false;
 bool need_publish = true;
 
 #ifdef MQTT_SSL
@@ -105,6 +105,7 @@ uint32_t current_frame = 1;
 uint32_t frame_count;
 
 TaskHandle_t matrixTask;
+TaskHandle_t mqttTask;
 TaskHandle_t connectionTask;
 
 unsigned long last_frame_duration = 0;
@@ -266,30 +267,46 @@ void matrixLoop(void * parameter) {
                 }
             }
         }
-        delay(10);
+        vTaskDelay(10);
+    }
+}
+
+void mqttLoop(void * parameter) {
+    for(;;) {
+        if(otaInProgress) {
+            break;
+        }
+
+        if(need_publish && client.connected()) {
+            client.publish(applet_rts_topic, messageToPublish);
+            need_publish = false;
+        }
+
+        client.loop();
+        vTaskDelay(10);
     }
 }
 
 void connectionLoop(void * parameter) {
     for(;;) {
+        if(otaInProgress) {
+            break;
+        }
+
         if(WiFi.isConnected() && WiFi.getMode() == WIFI_STA) {
             if(!client.connected()) {
                 showStatusApplet("mqtt_disconnected");
                 vTaskDelay(500);
-                if(mqttShouldReconnect) {
-                    showStatusApplet("mqtt_connecting");
-                    client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
-                    if (client.connected()) {
-                        showStatusApplet("mqtt_connected");
-                        vTaskDelay(500);
-                        client.subscribe(applet_topic);
-                        need_publish = true;
-                        strcpy(messageToPublish, "DEVICE_BOOT");
-                        vTaskDelay(500);
-                        showStatusApplet("ready");
-                    }
-                } else {
-                    vTaskDelay(1000000);
+                showStatusApplet("mqtt_connecting");
+                client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
+                if (client.connected()) {
+                    showStatusApplet("mqtt_connected");
+                    vTaskDelay(500);
+                    client.subscribe(applet_topic);
+                    need_publish = true;
+                    strcpy(messageToPublish, "DEVICE_BOOT");
+                    vTaskDelay(500);
+                    showStatusApplet("ready");
                 }
             }
         } else {
@@ -315,6 +332,15 @@ void setup() {
       1,  /* Priority of the task */
       &matrixTask,  /* Task handle. */
     1); /* Core where the task should run */
+
+    xTaskCreatePinnedToCore(
+      mqttLoop, /* Function to implement the task */
+      "MqttTask", /* Name of the task */
+      2000,  /* Stack size in words */
+      NULL,  /* Task input parameter */
+      1,  /* Priority of the task */
+      &mqttTask,  /* Task handle. */
+    0); /* Core where the task should run */
 
     showStatusApplet("startup");
 
@@ -344,7 +370,7 @@ void setup() {
     WiFi.setHostname(hostName);
     WiFi.setAutoReconnect(true);
 
-    wifiManager.setConnectTimeout(30);
+    wifiManager.setConnectTimeout(60);
     wifiManager.setAPCallback(configModeCallback);
     wifiManager.setCleanConnect(true);
     wifiManager.autoConnect(hostName);
@@ -354,7 +380,8 @@ void setup() {
     ArduinoOTA.onStart([]() {
         currentMode = NONE;
 
-        mqttShouldReconnect = false;
+        otaInProgress = true;
+
         client.disconnect();
 
         showStatusApplet("startup");
@@ -419,12 +446,7 @@ void loop() {
     }
     #endif
 
-    if(need_publish) {
-        client.publish(applet_rts_topic, messageToPublish);
-        need_publish = false;
-    }
-
-    client.loop();
     ArduinoOTA.handle();
+    //Serial.println(esp_get_free_heap_size());
     delay(2);
 }
