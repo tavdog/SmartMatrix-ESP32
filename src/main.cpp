@@ -344,11 +344,6 @@ void setup() {
     ArduinoOTA.onStart([]() {
         currentMode = NONE;
 
-        //Clear and reset all libwebp buffers.
-        WebPDataClear(&webp_data);
-        WebPDemuxReleaseIterator(&iter);
-        WebPDemuxDelete(demux);
-
         mqttShouldReconnect = false;
         client.disconnect();
 
