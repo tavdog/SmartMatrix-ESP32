@@ -1,5 +1,5 @@
 //#define TIDBYT
-#define MQTT_SSL
+//#define MQTT_SSL
 
 #include <FS.h>
 #include "LittleFS.h"
@@ -74,6 +74,7 @@ char applet_rts_topic[26];
 char brightness_topic[22];
 char lastProgText[12];
 char statusAppletPath[30];
+char messageToPublish[13];
 
 WebPData webp_data;
 
@@ -83,6 +84,7 @@ int currentBrightness = 100;
 unsigned long bufferPos;
 bool recv_length = false;
 bool mqttShouldReconnect = true;
+bool need_publish = true;
 
 #ifdef MQTT_SSL
 WiFiClientSecure wifiClient;
@@ -149,14 +151,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             ArduinoOTA.end();
             recv_length = false;
             bufferPos = 0;
-            client.publish(applet_rts_topic, "OK");
+            need_publish = true;
+            strcpy(messageToPublish, "OK");
         } else if(strncmp((char *)payload,"PING",4) == 0) {
-            client.publish(applet_rts_topic, "PONG");
+            need_publish = true;
+            strcpy(messageToPublish, "PONG");
         } else if(!recv_length) {
             bufsize = atoi((char *)payload);
             tmpbuf = (uint8_t *) malloc(bufsize);
             recv_length = true;
-            client.publish(applet_rts_topic, "OK");
+            need_publish = true;
+            strcpy(messageToPublish, "OK");
         } else {
             if(strncmp((char *)payload,"FINISH",6) == 0) {
                 if (strncmp((const char*)tmpbuf, "RIFF", 4) == 0) {
@@ -169,26 +174,30 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                     webp_data.size = bufsize;
                     webp_data.bytes = (uint8_t *) WebPMalloc(bufsize);
                     if(webp_data.bytes == NULL) {
-                        client.publish(applet_rts_topic, "DECODE_ERROR");
+                        need_publish = true;
+                        strcpy(messageToPublish, "DECODE_ERROR");
                     } else {
                         memcpy((void *)webp_data.bytes, tmpbuf, bufsize);
 
                         //set display flags!
                         newapplet = true;
                         currentMode = APPLET;
-                        client.publish(applet_rts_topic, "PUSHED");
+                        need_publish = true;
+                        strcpy(messageToPublish, "PUSHED");
                     }
                     free(tmpbuf);
                     ArduinoOTA.begin();
                 } else {
-                    client.publish(applet_rts_topic, "DECODE_ERROR");
+                    need_publish = true;
+                    strcpy(messageToPublish, "DECODE_ERROR");
                 }
                 bufferPos = 0;
                 recv_length = false;
             } else {
                 memcpy((void *)(tmpbuf+bufferPos), payload, length);
                 bufferPos += length;
-                client.publish(applet_rts_topic, "OK");
+                need_publish = true;
+                strcpy(messageToPublish, "OK");
             }
         }
     }
@@ -257,7 +266,7 @@ void matrixLoop(void * parameter) {
                 }
             }
         }
-        vTaskDelay(100);
+        delay(10);
     }
 }
 
@@ -274,7 +283,8 @@ void connectionLoop(void * parameter) {
                         showStatusApplet("mqtt_connected");
                         vTaskDelay(500);
                         client.subscribe(applet_topic);
-                        client.publish(applet_rts_topic, "DEVICE_BOOT");
+                        need_publish = true;
+                        strcpy(messageToPublish, "DEVICE_BOOT");
                         vTaskDelay(500);
                         showStatusApplet("ready");
                     }
@@ -334,7 +344,7 @@ void setup() {
     WiFi.setHostname(hostName);
     WiFi.setAutoReconnect(true);
 
-    wifiManager.setConnectTimeout(20);
+    wifiManager.setConnectTimeout(30);
     wifiManager.setAPCallback(configModeCallback);
     wifiManager.setCleanConnect(true);
     wifiManager.autoConnect(hostName);
@@ -384,7 +394,7 @@ void loop() {
         if(event.light > 50) {
             //low brightness
             desiredBrightness = 80;
-        } else if(event.light > 5) {
+        } else if(event.light > 0) {
             //low brightness
             desiredBrightness = 20;
         } else {
@@ -407,4 +417,9 @@ void loop() {
 
     client.loop();
     ArduinoOTA.handle();
+
+    if(need_publish) {
+        client.publish(applet_rts_topic, messageToPublish);
+        need_publish = false;
+    }
 }
