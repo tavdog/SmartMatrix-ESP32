@@ -151,17 +151,17 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             ArduinoOTA.end();
             recv_length = false;
             bufferPos = 0;
-            need_publish = true;
             strcpy(messageToPublish, "OK");
-        } else if(strncmp((char *)payload,"PING",4) == 0) {
             need_publish = true;
+        } else if(strncmp((char *)payload,"PING",4) == 0) {
             strcpy(messageToPublish, "PONG");
+            need_publish = true;
         } else if(!recv_length) {
             bufsize = atoi((char *)payload);
             tmpbuf = (uint8_t *) malloc(bufsize);
             recv_length = true;
-            need_publish = true;
             strcpy(messageToPublish, "OK");
+            need_publish = true;
         } else {
             if(strncmp((char *)payload,"FINISH",6) == 0) {
                 if (strncmp((const char*)tmpbuf, "RIFF", 4) == 0) {
@@ -174,30 +174,30 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                     webp_data.size = bufsize;
                     webp_data.bytes = (uint8_t *) WebPMalloc(bufsize);
                     if(webp_data.bytes == NULL) {
-                        need_publish = true;
                         strcpy(messageToPublish, "DECODE_ERROR");
+                        need_publish = true;
                     } else {
                         memcpy((void *)webp_data.bytes, tmpbuf, bufsize);
 
                         //set display flags!
                         newapplet = true;
                         currentMode = APPLET;
-                        need_publish = true;
                         strcpy(messageToPublish, "PUSHED");
+                        need_publish = true;
                     }
                     free(tmpbuf);
                     ArduinoOTA.begin();
                 } else {
-                    need_publish = true;
                     strcpy(messageToPublish, "DECODE_ERROR");
+                    need_publish = true;
                 }
                 bufferPos = 0;
                 recv_length = false;
             } else {
                 memcpy((void *)(tmpbuf+bufferPos), payload, length);
                 bufferPos += length;
-                need_publish = true;
                 strcpy(messageToPublish, "OK");
+                need_publish = true;
             }
         }
     }
@@ -360,6 +360,10 @@ void setup() {
         showStatusApplet("startup");
     });
 
+    ArduinoOTA.onError([](ota_error_t error) {
+        ESP.restart();
+    });
+
     ArduinoOTA.begin();
 
     esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
@@ -415,11 +419,12 @@ void loop() {
     }
     #endif
 
-    client.loop();
-    ArduinoOTA.handle();
-
     if(need_publish) {
         client.publish(applet_rts_topic, messageToPublish);
         need_publish = false;
     }
+
+    client.loop();
+    ArduinoOTA.handle();
+    delay(2);
 }
