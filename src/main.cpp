@@ -149,7 +149,6 @@ void showStatusApplet(const char * statusApplet) {
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
     if (strcmp(topic, applet_topic) == 0) {
         if(strncmp((char *)payload,"START",5) == 0) {
-            ArduinoOTA.end();
             recv_length = false;
             bufferPos = 0;
             strcpy(messageToPublish, "OK");
@@ -187,7 +186,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                         need_publish = true;
                     }
                     free(tmpbuf);
-                    ArduinoOTA.begin();
                 } else {
                     strcpy(messageToPublish, "DECODE_ERROR");
                     need_publish = true;
@@ -267,6 +265,37 @@ void matrixLoop(void * parameter) {
                 }
             }
         }
+
+        #ifndef TIDBYT
+        //Update desired brightness
+        if (millis() - last_check_tsl_time > 500) {
+            sensors_event_t event;
+            tsl.getEvent(&event);
+
+            if(event.light > 50) {
+                //low brightness
+                desiredBrightness = 80;
+            } else if(event.light > 0) {
+                //low brightness
+                desiredBrightness = 20;
+            } else {
+                desiredBrightness = 0;
+            }
+            
+            last_check_tsl_time = millis();
+        }
+
+        if (millis() - last_adjust_brightness_time > 10 && currentBrightness != desiredBrightness) {
+            if(currentBrightness > desiredBrightness) {
+                currentBrightness--;
+            } else {
+                currentBrightness++;
+            }
+            dma_display.setBrightness8(currentBrightness);
+            last_adjust_brightness_time = millis();
+        }
+        #endif
+
         vTaskDelay(10);
     }
 }
@@ -327,7 +356,7 @@ void setup() {
     xTaskCreatePinnedToCore(
       matrixLoop, /* Function to implement the task */
       "MatrixTask", /* Name of the task */
-      3300,  /* Stack size in words */
+      3600,  /* Stack size in words */
       NULL,  /* Task input parameter */
       1,  /* Priority of the task */
       &matrixTask,  /* Task handle. */
@@ -371,6 +400,7 @@ void setup() {
     WiFi.setAutoReconnect(true);
 
     wifiManager.setConnectTimeout(60);
+    wifiManager.setConfigPortalTimeout(10);
     wifiManager.setAPCallback(configModeCallback);
     wifiManager.setCleanConnect(true);
     wifiManager.autoConnect(hostName);
@@ -416,37 +446,5 @@ void setup() {
 }
 
 void loop() {
-    #ifndef TIDBYT
-    //Update desired brightness
-    if (millis() - last_check_tsl_time > 500) {
-        sensors_event_t event;
-        tsl.getEvent(&event);
-
-        if(event.light > 50) {
-            //low brightness
-            desiredBrightness = 80;
-        } else if(event.light > 0) {
-            //low brightness
-            desiredBrightness = 20;
-        } else {
-            desiredBrightness = 0;
-        }
-        
-        last_check_tsl_time = millis();
-    }
-
-    if (millis() - last_adjust_brightness_time > 10 && currentBrightness != desiredBrightness) {
-        if(currentBrightness > desiredBrightness) {
-            currentBrightness--;
-        } else {
-            currentBrightness++;
-        }
-        dma_display.setBrightness8(currentBrightness);
-        last_adjust_brightness_time = millis();
-    }
-    #endif
-
     ArduinoOTA.handle();
-    //Serial.println(esp_get_free_heap_size());
-    delay(2);
 }
