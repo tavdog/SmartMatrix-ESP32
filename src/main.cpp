@@ -411,6 +411,10 @@ void setup() {
         currentMode = NONE;
 
         otaInProgress = true;
+        free(tmpbuf);
+        WebPDataClear(&webp_data);
+        WebPDemuxReleaseIterator(&iter);
+        WebPDemuxDelete(demux);
 
         client.disconnect();
 
