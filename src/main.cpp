@@ -80,11 +80,12 @@ WebPData webp_data;
 
 int currentMode = WELCOME;
 int desiredBrightness = 20;
-int currentBrightness = 100;
+int currentBrightness = 20;
 unsigned long bufferPos;
 bool recv_length = false;
 bool otaInProgress = false;
 bool need_publish = true;
+bool tslEnabled;
 
 #ifdef MQTT_SSL
 WiFiClientSecure wifiClient;
@@ -125,8 +126,10 @@ void showStatusApplet(const char * statusApplet) {
         //Set buffers
         currentMode = NONE;
         WebPDataClear(&webp_data);
-        WebPDemuxReleaseIterator(&iter);
-        WebPDemuxDelete(demux);
+        if(webp_flags & ANIMATION_FLAG) {
+            WebPDemuxReleaseIterator(&iter);
+            WebPDemuxDelete(demux);
+        }
 
         //setup webp buffer and populate from temporary buffer
         webp_data.size = file.size();
@@ -230,7 +233,7 @@ void matrixLoop(void * parameter) {
 
                                         int alphaValue = tempPixelBuffer[pixelOffsetFT+3];
                                         
-                                        if(alphaValue == 255) {
+                                        if(alphaValue == 255 && true) {
                                             dma_display.writePixel(x,y, dma_display.color565(tempPixelBuffer[pixelOffsetFT],tempPixelBuffer[pixelOffsetFT+1],tempPixelBuffer[pixelOffsetFT+2]));
                                         }
                                         
@@ -268,7 +271,7 @@ void matrixLoop(void * parameter) {
 
         #ifndef TIDBYT
         //Update desired brightness
-        if (millis() - last_check_tsl_time > 500) {
+        if (millis() - last_check_tsl_time > 500 && tslEnabled) {
             sensors_event_t event;
             tsl.getEvent(&event);
 
@@ -351,6 +354,7 @@ void setup() {
 
     dma_display.begin();
     dma_display.setBrightness8(currentBrightness); //0-255
+    dma_display.setLatBlanking(3);
     dma_display.clearScreen();
 
     xTaskCreatePinnedToCore(
@@ -377,13 +381,14 @@ void setup() {
     
     #ifndef TIDBYT
     Wire.begin();
+    tslEnabled = true;
     if(!tsl.begin())
     {
-        while(1);
-    }
-
-    tsl.enableAutoRange(true);            /* Auto-gain ... switches automatically between 1x and 16x */
-    tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);      /* fast but low resolution */
+        tslEnabled = false;
+    } else {
+        tsl.enableAutoRange(true);            /* Auto-gain ... switches automatically between 1x and 16x */
+        tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
+    }      /* fast but low resolution */
     #endif
 
     WiFiManager wifiManager;
@@ -400,7 +405,7 @@ void setup() {
     WiFi.setAutoReconnect(true);
 
     wifiManager.setConnectTimeout(60);
-    wifiManager.setConfigPortalTimeout(10);
+    wifiManager.setConfigPortalTimeout(60);
     wifiManager.setAPCallback(configModeCallback);
     wifiManager.setCleanConnect(true);
     wifiManager.autoConnect(hostName);
