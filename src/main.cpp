@@ -185,11 +185,12 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
             char tmpFileName[14];
             sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
             pushingAppletFile = LittleFS.open(tmpFileName, FILE_WRITE);
+            char msg[50];
             StaticJsonDocument<50> doc;
             doc["type"] = "success";
             doc["next"] = "send_chunk";
-            serializeJson(doc, messageToPublish);
-            need_publish = true;
+            serializeJson(doc, msg);
+            client.publish(status_topic, msg);
         }
         else if (strcmp(command, "app_graphic_stop") == 0)
         {
@@ -197,11 +198,12 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
             char tmpFileName[14];
             sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
             LittleFS.remove(tmpFileName);
+            char msg[50];
             StaticJsonDocument<50> doc;
             doc["type"] = "success";
             doc["next"] = "send_next";
-            serializeJson(doc, messageToPublish);
-            need_publish = true;
+            serializeJson(doc, msg);
+            client.publish(status_topic, msg);
         }
         else if (strcmp(command, "app_graphic_sent") == 0)
         {
@@ -213,11 +215,12 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
             sprintf(realFileName, "/%s.webp", pushingAppletUUID);
             LittleFS.rename(tmpFileName, realFileName);
 
+            char msg[50];
             StaticJsonDocument<50> doc;
             doc["type"] = "success";
             doc["next"] = "none";
-            serializeJson(doc, messageToPublish);
-            need_publish = true;
+            serializeJson(doc, msg);
+            client.publish(status_topic, msg);
         }
         else if (strcmp(command, "display_app_graphic") == 0)
         {
@@ -226,28 +229,33 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
             if (result == 0)
             {
                 // Applet does not exist!
+                char msg[50];
                 StaticJsonDocument<50> doc;
                 doc["type"] = "error";
                 doc["info"] = "not_found";
-                serializeJson(doc, messageToPublish);
-                need_publish = true;
+                serializeJson(doc, msg);
+                client.publish(status_topic, msg);
             }
             else if (result == 1)
             {
-                StaticJsonDocument<50> doc;
+                strcpy(currentAppletUUID, appid);
+
+                char msg[100];
+                StaticJsonDocument<100> doc;
                 doc["type"] = "success";
                 doc["next"] = "none";
                 doc["info"] = "applet_displayed";
-                serializeJson(doc, messageToPublish);
-                need_publish = true;
+                serializeJson(doc, msg);
+                client.publish(status_topic, msg);
             }
             else if (result == 2)
             {
-                StaticJsonDocument<50> doc;
+                char msg[100];
+                StaticJsonDocument<100> doc;
                 doc["type"] = "error";
                 doc["info"] = "malformed_header";
-                serializeJson(doc, messageToPublish);
-                need_publish = true;
+                serializeJson(doc, msg);
+                client.publish(status_topic, msg);
             }
         }
         else if (strcmp(command, "device_reboot") == 0)
@@ -262,20 +270,22 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
         }
         else if (strcmp(command, "ping") == 0)
         {
+            char msg[20];
             StaticJsonDocument<20> doc;
             doc["type"] = "pong";
-            serializeJson(doc, messageToPublish);
-            need_publish = true;
+            serializeJson(doc, msg);
+            client.publish(status_topic, msg);
         }
     }
     else if (strcmp(topic, applet_topic) == 0)
     {
         pushingAppletFile.write(payload, length);
+        char msg[30];
         StaticJsonDocument<30> doc;
         doc["type"] = "success";
         doc["next"] = "send_chunk";
-        serializeJson(doc, messageToPublish);
-        need_publish = true;
+        serializeJson(doc, msg);
+        client.publish(status_topic, msg);
     }
 }
 
@@ -414,12 +424,6 @@ void mqttLoop(void *parameter)
 {
     for (;;)
     {
-        if (need_publish && client.connected())
-        {
-            client.publish(status_topic, messageToPublish);
-            need_publish = false;
-        }
-
         client.loop();
         vTaskDelay(1);
     }
@@ -445,10 +449,11 @@ void connectionLoop(void *parameter)
                     showApplet("mqtt_connected");
                     client.subscribe(applet_topic);
                     client.subscribe(command_topic);
+                    char msg[30];
                     StaticJsonDocument<30> doc;
                     doc["type"] = "boot";
-                    serializeJson(doc, messageToPublish);
-                    need_publish = true;
+                    serializeJson(doc, msg);
+                    client.publish(status_topic, msg);
                 }
             }
         }
@@ -578,6 +583,7 @@ void loop()
         StaticJsonDocument<50> doc;
         char hbMessage[50];
         doc["type"] = "heartbeat";
+        doc["appid"] = currentAppletUUID;
         doc["heap"] = esp_get_free_heap_size();
         serializeJson(doc, hbMessage);
         client.publish(status_topic, hbMessage);
