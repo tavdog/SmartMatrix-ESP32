@@ -152,6 +152,9 @@ int showApplet(const char * applet) {
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
+    if(otaInProgress) {
+        return;
+    }
     if (strcmp(topic, command_topic) == 0) {
         //Receiving new applet manifest!
         StaticJsonDocument<200> doc;
@@ -354,6 +357,11 @@ void connectionLoop(void * parameter) {
                     client.subscribe(applet_topic);
                     client.subscribe(command_topic);
                     showApplet("ready");
+                    vTaskDelay(500);
+                    StaticJsonDocument<30> doc;
+                    doc["type"] = "boot";
+                    serializeJson(doc, messageToPublish);
+                    need_publish = true;
                 }
             }
         } else {
@@ -441,6 +449,7 @@ void setup() {
     ArduinoOTA.onStart([]() {
         currentMode = NONE;
         otaInProgress = true;
+        //client.disconnect();
         showApplet("startup");
     });
 
