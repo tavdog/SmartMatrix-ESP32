@@ -171,6 +171,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             doc["next"] = "send_chunk";
             serializeJson(doc, messageToPublish);
             need_publish = true;
+        } else if(strcmp(command, "app_graphic_stop") == 0) {
+            pushingAppletFile.close();
+            char tmpFileName[14];
+            sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
+            LittleFS.remove(tmpFileName);
+            StaticJsonDocument<50> doc;
+            doc["type"] = "success";
+            doc["next"] = "send_next";
+            serializeJson(doc, messageToPublish);
+            need_publish = true;
         } else if(strcmp(command, "app_graphic_sent") == 0) {
             pushingAppletFile.close();
             //Move temp file to real applet
@@ -326,7 +336,7 @@ void matrixLoop(void * parameter) {
         }
         #endif
 
-        vTaskDelay(10);
+        vTaskDelay(1);
     }
 }
 
@@ -338,7 +348,7 @@ void mqttLoop(void * parameter) {
         }
 
         client.loop();
-        vTaskDelay(10);
+        vTaskDelay(1);
     }
 }
 
@@ -371,8 +381,9 @@ void connectionLoop(void * parameter) {
         vTaskDelay(10000);
 
         if(WiFi.isConnected() && client.connected()) {
-            StaticJsonDocument<30> doc;
+            StaticJsonDocument<50> doc;
             doc["type"] = "heartbeat";
+            doc["heap"] = esp_get_free_heap_size();
             serializeJson(doc, messageToPublish);
             need_publish = true;
         }
