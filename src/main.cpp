@@ -157,17 +157,11 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         StaticJsonDocument<200> doc;
         deserializeJson(doc, payload);
         const char* command = doc["command"];
-        Serial.print("Recieved command: ");
-        Serial.println(command);
         if(strcmp(command, "send_app_graphic") == 0) {
             const char* appid = doc["params"]["appid"];
-            Serial.print("Appid: ");
-            Serial.println(appid);
             strcpy(pushingAppletUUID, appid);
             char tmpFileName[14];
             sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
-            Serial.println(tmpFileName);
-
             pushingAppletFile = LittleFS.open(tmpFileName, FILE_WRITE);
             StaticJsonDocument<50> doc;
             doc["type"] = "success";
@@ -175,7 +169,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             serializeJson(doc, messageToPublish);
             need_publish = true;
         } else if(strcmp(command, "app_graphic_sent") == 0) {
-            Serial.println("Moving");
             pushingAppletFile.close();
             //Move temp file to real applet
             char tmpFileName[14];
@@ -189,13 +182,9 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             doc["next"] = "none";
             serializeJson(doc, messageToPublish);
             need_publish = true;
-            Serial.println("Moved");
         } else if(strcmp(command, "display_app_graphic") == 0) {
             const char* appid = doc["params"]["appid"];
-            Serial.println("Displaying");
-            Serial.println(appid);
             int result = showApplet(appid);
-            Serial.println(result);
             if(result == 0) {
                 //Applet does not exist!
                 StaticJsonDocument<50> doc;
@@ -230,8 +219,6 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             need_publish = true;
         }
     } else if (strcmp(topic, applet_topic) == 0) {
-        Serial.print("Recieved chunk: ");
-        Serial.println(length);
         pushingAppletFile.write(payload, length);
         StaticJsonDocument<30> doc;
         doc["type"] = "success";
