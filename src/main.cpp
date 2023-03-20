@@ -395,7 +395,7 @@ void setup() {
     xTaskCreatePinnedToCore(
       mqttLoop, /* Function to implement the task */
       "MqttTask", /* Name of the task */
-      15000,  /* Stack size in words */
+      5000,  /* Stack size in words */
       NULL,  /* Task input parameter */
       1,  /* Priority of the task */
       &mqttTask,  /* Task handle. */
