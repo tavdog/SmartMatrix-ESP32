@@ -79,7 +79,6 @@ char applet_topic[26];
 char status_topic[26];
 char command_topic[27];
 char appletPath[30];
-char messageToPublish[100];
 
 WebPData webp_data;
 
@@ -109,7 +108,6 @@ uint32_t current_frame = 1;
 uint32_t frame_count;
 
 TaskHandle_t matrixTask;
-TaskHandle_t mqttTask;
 TaskHandle_t connectionTask;
 
 // variables for applet being currently pushed
@@ -280,8 +278,8 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
     else if (strcmp(topic, applet_topic) == 0)
     {
         pushingAppletFile.write(payload, length);
-        char msg[30];
-        StaticJsonDocument<30> doc;
+        char msg[50];
+        StaticJsonDocument<50> doc;
         doc["type"] = "success";
         doc["next"] = "send_chunk";
         serializeJson(doc, msg);
@@ -376,55 +374,6 @@ void matrixLoop(void *parameter)
             }
         }
 
-#ifndef TIDBYT
-        // Update desired brightness
-        if (millis() - last_check_tsl_time > 500 && tslEnabled)
-        {
-            sensors_event_t event;
-            tsl.getEvent(&event);
-
-            if (event.light > 50)
-            {
-                // low brightness
-                desiredBrightness = 80;
-            }
-            else if (event.light > 0)
-            {
-                // low brightness
-                desiredBrightness = 20;
-            }
-            else
-            {
-                desiredBrightness = 0;
-            }
-
-            last_check_tsl_time = millis();
-        }
-
-        if (millis() - last_adjust_brightness_time > 10 && currentBrightness != desiredBrightness)
-        {
-            if (currentBrightness > desiredBrightness)
-            {
-                currentBrightness--;
-            }
-            else
-            {
-                currentBrightness++;
-            }
-            dma_display.setBrightness8(currentBrightness);
-            last_adjust_brightness_time = millis();
-        }
-#endif
-
-        vTaskDelay(1);
-    }
-}
-
-void mqttLoop(void *parameter)
-{
-    for (;;)
-    {
-        client.loop();
         vTaskDelay(1);
     }
 }
@@ -442,27 +391,19 @@ void connectionLoop(void *parameter)
         {
             if (!client.connected())
             {
-                showApplet("mqtt_connecting");
                 client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
                 if (client.connected())
                 {
-                    showApplet("mqtt_connected");
                     client.subscribe(applet_topic);
                     client.subscribe(command_topic);
-                    char msg[30];
-                    StaticJsonDocument<30> doc;
-                    doc["type"] = "boot";
-                    serializeJson(doc, msg);
-                    client.publish(status_topic, msg);
                 }
             }
         }
         else
         {
-            showApplet("wifi_connecting");
             WiFi.reconnect();
         }
-        vTaskDelay(500);
+        vTaskDelay(5000);
     }
 }
 
@@ -488,15 +429,6 @@ void setup()
         1,            /* Priority of the task */
         &matrixTask,  /* Task handle. */
         1);           /* Core where the task should run */
-
-    xTaskCreatePinnedToCore(
-        mqttLoop,   /* Function to implement the task */
-        "MqttTask", /* Name of the task */
-        5000,       /* Stack size in words */
-        NULL,       /* Task input parameter */
-        1,          /* Priority of the task */
-        &mqttTask,  /* Task handle. */
-        0);         /* Core where the task should run */
 
     showApplet("startup");
 
@@ -539,10 +471,10 @@ void setup()
 
     ArduinoOTA.onStart([]()
                        {
-        currentMode = NONE;
-        otaInProgress = true;
-        //client.disconnect();
-        showApplet("startup"); });
+                           currentMode = NONE;
+                           otaInProgress = true;
+                           // client.disconnect();
+                       });
 
     ArduinoOTA.onError([](ota_error_t error)
                        { ESP.restart(); });
@@ -562,14 +494,36 @@ void setup()
     client.setServer(MQTT_HOST, MQTT_PORT);
     client.setCallback(mqttCallback);
 
-    xTaskCreatePinnedToCore(
-        connectionLoop,   /* Function to implement the task */
-        "ConnectionTask", /* Name of the task */
-        3000,             /* Stack size in words */
-        NULL,             /* Task input parameter */
-        0,                /* Priority of the task */
-        &connectionTask,  /* Task handle. */
-        0);               /* Core where the task should run */
+    if (WiFi.isConnected())
+    {
+        showApplet("mqtt_connecting");
+        client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
+        if (client.connected())
+        {
+            showApplet("ready");
+            delay(500);
+            client.subscribe(applet_topic);
+            client.subscribe(command_topic);
+            char msg[30];
+            StaticJsonDocument<30> doc;
+            doc["type"] = "boot";
+            serializeJson(doc, msg);
+            client.publish(status_topic, msg);
+        }
+
+        xTaskCreatePinnedToCore(
+            connectionLoop,   /* Function to implement the task */
+            "ConnectionTask", /* Name of the task */
+            3000,             /* Stack size in words */
+            NULL,             /* Task input parameter */
+            0,                /* Priority of the task */
+            &connectionTask,  /* Task handle. */
+            0);               /* Core where the task should run */
+    }
+    else
+    {
+        ESP.restart();
+    }
 }
 
 unsigned long lastHeartbeat = 0;
@@ -577,15 +531,56 @@ unsigned long lastHeartbeat = 0;
 void loop()
 {
     ArduinoOTA.handle();
+    client.loop();
 
-    if(millis() - lastHeartbeat > 10000){
+    if (millis() - lastHeartbeat > 10000)
+    {
         lastHeartbeat = millis();
-        StaticJsonDocument<50> doc;
-        char hbMessage[50];
+        StaticJsonDocument<150> doc;
+        char hbMessage[150];
         doc["type"] = "heartbeat";
         doc["appid"] = currentAppletUUID;
         doc["heap"] = esp_get_free_heap_size();
+        doc["uptime"] = floor(esp_timer_get_time() / 1000000);
         serializeJson(doc, hbMessage);
         client.publish(status_topic, hbMessage);
+    }
+
+    // Update desired brightness
+    if (millis() - last_check_tsl_time > 500 && tslEnabled)
+    {
+        sensors_event_t event;
+        tsl.getEvent(&event);
+
+        if (event.light > 50)
+        {
+            // low brightness
+            desiredBrightness = 80;
+        }
+        else if (event.light > 0)
+        {
+            // low brightness
+            desiredBrightness = 20;
+        }
+        else
+        {
+            desiredBrightness = 0;
+        }
+
+        last_check_tsl_time = millis();
+    }
+
+    if (millis() - last_adjust_brightness_time > 10 && currentBrightness != desiredBrightness)
+    {
+        if (currentBrightness > desiredBrightness)
+        {
+            currentBrightness--;
+        }
+        else
+        {
+            currentBrightness++;
+        }
+        dma_display.setBrightness8(currentBrightness);
+        last_adjust_brightness_time = millis();
     }
 }
