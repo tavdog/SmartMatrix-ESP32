@@ -1,210 +1,209 @@
-// #define TIDBYT
-// #define MQTT_SSL
-
-#include <FS.h>
-#include "LittleFS.h"
-
 #include <Arduino.h>
-#include <WiFiManager.h>
-#include <PubSubClient.h>
-#include <ArduinoJson.h>
 
-#ifdef MQTT_SSL
-#include <WiFiClientSecure.h>
-#else
-#include <WiFiClient.h>
-#endif
-
-#include <webp/demux.h>
-
-extern "C"
-{
-#include "esp_core_dump.h"
+extern "C" {
+#include "freertos/FreeRTOS.h"
+#include "freertos/timers.h"
 }
 
-#include <constants.h>
-#include "secrets.h"
-
-#include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
-
-#ifndef TIDBYT
-#include <Wire.h>
 #include <Adafruit_Sensor.h>
 #include <Adafruit_TSL2561_U.h>
-#endif
+#include <ArduinoJson.h>
+#include <AsyncMqtt_Generic.h>
+#include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
+#include <FS.h>
+#include <WiFiManager.h>
+#include <Wire.h>
+#include <webp/demux.h>
 
-#define NO_OTA_PORT
-#include <ArduinoOTA.h>
+#include <esp32fota.hpp>
 
-#ifdef TIDBYT
+#include "LittleFS.h"
+#include "secrets.h"
 
-// Change these to whatever suits
-#define R1_PIN 21
-#define G1_PIN 2
-#define B1_PIN 22
-#define R2_PIN 23
-#define G2_PIN 4
-#define B2_PIN 27
-#define A_PIN 26
-#define B_PIN 5
-#define C_PIN 25
-#define D_PIN 18
-#define E_PIN -1 // required for 1/32 scan panels, like 64x64px. Any available pin would do, i.e. IO32
-#define LAT_PIN 19
-#define OE_PIN 32
-#define CLK_PIN 33
+const char *manifestURL =
+    "https://pub-34eaf0d2dcbb40c396065db28dcc4418.r2.dev/manifest.json";
 
-HUB75_I2S_CFG::i2s_pins _pins = {R1_PIN, G1_PIN, B1_PIN, R2_PIN, G2_PIN, B2_PIN, A_PIN, B_PIN, C_PIN, D_PIN, E_PIN, LAT_PIN, OE_PIN, CLK_PIN};
+MatrixPanel_I2S_DMA matrix = MatrixPanel_I2S_DMA();
 
-HUB75_I2S_CFG mxconfig(
-    64,   // Module width
-    32,   // Module height
-    1,    // chain length
-    _pins // pin mapping
-);
-
-MatrixPanel_I2S_DMA dma_display = MatrixPanel_I2S_DMA(mxconfig);
-#else
-MatrixPanel_I2S_DMA dma_display = MatrixPanel_I2S_DMA();
-#endif
-
-#ifndef TIDBYT
-Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
-#endif
-
-boolean newapplet = false;
+Adafruit_TSL2561_Unified tsl =
+    Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
 
 char hostName[18];
-char applet_topic[26];
-char status_topic[26];
-char command_topic[27];
+char appletTopic[26];
+char statusTopic[26];
+char commandTopic[27];
 char appletPath[30];
+char pushingAppletUUID[37];
+char currentAppletUUID[37];
+char statusApplet[30];
 
-WebPData webp_data;
+WebPData webPData;
 
-int currentMode = WELCOME;
 int desiredBrightness = 20;
 int currentBrightness = 20;
 
-bool otaInProgress = false;
-bool hasSentCoreDump = false;
-bool need_publish = false;
+bool newApplet;
+bool otaInProgress;
+bool hasApplet;
+bool hasSentBootMessage;
+bool newStatusApplet;
 bool tslEnabled;
 
-#ifdef MQTT_SSL
-WiFiClientSecure wifiClient;
-#else
-WiFiClient wifiClient;
-#endif
-
-PubSubClient client(wifiClient);
+AsyncMqttClient client;
+WiFiManager wifiManager;
+esp32FOTA esp32FOTA("SmartMatrix32", APP_VERSION, false, true);
 
 uint8_t tempPixelBuffer[MATRIX_HEIGHT * MATRIX_WIDTH * 4];
 
-WebPDemuxer *demux;
+WebPDemuxer *webPDemux;
 WebPIterator iter;
-uint32_t webp_flags;
-uint32_t current_frame = 1;
-uint32_t frame_count;
+uint32_t webPFlags;
+uint32_t currentFrameIndex = 1;
+uint32_t appletFrameCount;
 
 TaskHandle_t matrixTask;
-TaskHandle_t connectionTask;
+TimerHandle_t mqttReconnectTimer;
+TimerHandle_t wifiReconnectTimer;
 
-// variables for applet being currently pushed
 File pushingAppletFile;
-char pushingAppletUUID[37];
 
-char currentAppletUUID[37];
+unsigned long lastFrameDuration = 0;
+unsigned long lastFrameTime = 0;
+unsigned long lastTSLCheckTime = 0;
+unsigned long lastAdjustBrightnessTime = 0;
+unsigned long lastHeartbeatTime = 0;
+unsigned long lastOTACheckTime = 0;
 
-unsigned long last_frame_duration = 0;
-unsigned long last_frame_time = 0;
-unsigned long last_check_tsl_time = 0;
-unsigned long last_adjust_brightness_time = 0;
-
-int showApplet(const char *applet)
-{
+int showApplet(const char *applet) {
     sprintf(appletPath, "/%s.webp", applet);
 
-    if (LittleFS.exists(appletPath))
-    {
+    if (LittleFS.exists(appletPath)) {
         File file = LittleFS.open(appletPath, FILE_READ);
 
         // Set buffers
-        currentMode = NONE;
-        WebPDataClear(&webp_data);
-        if (webp_flags & ANIMATION_FLAG)
-        {
+        hasApplet = false;
+        WebPDataClear(&webPData);
+        if (webPFlags & ANIMATION_FLAG) {
             WebPDemuxReleaseIterator(&iter);
-            WebPDemuxDelete(demux);
+            WebPDemuxDelete(webPDemux);
         }
 
         // setup webp buffer and populate from temporary buffer
-        webp_data.size = file.size();
-        webp_data.bytes = (uint8_t *)WebPMalloc(file.size());
+        webPData.size = file.size();
+        webPData.bytes = (uint8_t *)WebPMalloc(file.size());
 
         // Fill buffer!
-        file.readBytes((char *)webp_data.bytes, file.size());
+        file.readBytes((char *)webPData.bytes, file.size());
         file.close();
 
         // Show!
-        if (strncmp((const char *)webp_data.bytes, "RIFF", 4) == 0)
-        {
-            newapplet = true;
-            currentMode = APPLET;
+        if (strncmp((const char *)webPData.bytes, "RIFF", 4) == 0) {
+            newApplet = true;
+            hasApplet = true;
             return 1;
-        }
-        else
-        {
+        } else {
             return 2;
         }
-    }
-    else
-    {
+    } else {
         return 0;
     }
 }
 
-void mqttCallback(char *topic, byte *payload, unsigned int length)
-{
-    if (otaInProgress)
-    {
-        return;
+void markAppletToShow(const char *applet) {
+    strcpy(statusApplet, applet);
+    newStatusApplet = true;
+}
+
+void configModeCallback(WiFiManager *wm) { markAppletToShow("wifi_config"); }
+void saveConfigCallback() { markAppletToShow("wifi_connecting"); }
+
+void connectToWifi() {
+    markAppletToShow("wifi_connecting");
+    wifiManager.setConnectTimeout(30);
+    wifiManager.setConfigPortalTimeout(120);
+    wifiManager.setAPCallback(configModeCallback);
+    wifiManager.setSaveConfigCallback(saveConfigCallback);
+    wifiManager.autoConnect(hostName);
+}
+
+void connectToMqtt() {
+    markAppletToShow("mqtt_connecting");
+    client.connect();
+}
+
+void WiFiEvent(WiFiEvent_t event) {
+    switch (event) {
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP6:
+        case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            markAppletToShow("wifi_connected");
+            connectToMqtt();
+            break;
+
+        case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            xTimerStop(mqttReconnectTimer,
+                       0);  // ensure we don't reconnect to MQTT while
+                            // reconnecting to Wi-Fi
+            xTimerStart(wifiReconnectTimer, 0);
+            break;
+        default:
+            break;
     }
-    if (strcmp(topic, command_topic) == 0)
-    {
+}
+
+void onMqttConnect(bool sessionPresent) {
+    markAppletToShow("mqtt_connected");
+    client.subscribe(commandTopic, 2);
+    client.subscribe(appletTopic, 2);
+    if (!hasSentBootMessage) {
+        hasSentBootMessage = true;
+        char jsonMessageBuf[20];
+        StaticJsonDocument<20> doc;
+        doc["type"] = "boot";
+        serializeJson(doc, jsonMessageBuf);
+        client.publish(statusTopic, 1, false, jsonMessageBuf);
+    }
+}
+
+void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+    markAppletToShow("mqtt_disconnected");
+    if (WiFi.isConnected()) {
+        xTimerStart(mqttReconnectTimer, 0);
+    }
+}
+
+void onMqttMessage(char *topic, char *payload,
+                   const AsyncMqttClientMessageProperties &properties,
+                   const size_t &len, const size_t &index,
+                   const size_t &total) {
+    if (strcmp(topic, commandTopic) == 0) {
         // Receiving new applet manifest!
         StaticJsonDocument<200> doc;
         deserializeJson(doc, payload);
         const char *command = doc["command"];
-        if (strcmp(command, "send_app_graphic") == 0)
-        {
+        if (strcmp(command, "send_app_graphic") == 0) {
             const char *appid = doc["params"]["appid"];
             strcpy(pushingAppletUUID, appid);
             char tmpFileName[14];
             sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
             pushingAppletFile = LittleFS.open(tmpFileName, FILE_WRITE);
-            char msg[50];
+            char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
             doc["type"] = "success";
             doc["next"] = "send_chunk";
-            serializeJson(doc, msg);
-            client.publish(status_topic, msg);
-        }
-        else if (strcmp(command, "app_graphic_stop") == 0)
-        {
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
+        } else if (strcmp(command, "app_graphic_stop") == 0) {
             pushingAppletFile.close();
             char tmpFileName[14];
             sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
             LittleFS.remove(tmpFileName);
-            char msg[50];
+            char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
             doc["type"] = "success";
             doc["next"] = "send_next";
-            serializeJson(doc, msg);
-            client.publish(status_topic, msg);
-        }
-        else if (strcmp(command, "app_graphic_sent") == 0)
-        {
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
+        } else if (strcmp(command, "app_graphic_sent") == 0) {
             pushingAppletFile.close();
             // Move temp file to real applet
             char tmpFileName[14];
@@ -213,242 +212,191 @@ void mqttCallback(char *topic, byte *payload, unsigned int length)
             sprintf(realFileName, "/%s.webp", pushingAppletUUID);
             LittleFS.rename(tmpFileName, realFileName);
 
-            char msg[50];
+            char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
             doc["type"] = "success";
             doc["next"] = "none";
-            serializeJson(doc, msg);
-            client.publish(status_topic, msg);
-        }
-        else if (strcmp(command, "display_app_graphic") == 0)
-        {
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
+        } else if (strcmp(command, "display_app_graphic") == 0) {
             const char *appid = doc["params"]["appid"];
             int result = showApplet(appid);
-            if (result == 0)
-            {
+            if (result == 0) {
                 // Applet does not exist!
-                char msg[50];
+                char jsonMessageBuf[50];
                 StaticJsonDocument<50> doc;
                 doc["type"] = "error";
                 doc["info"] = "not_found";
-                serializeJson(doc, msg);
-                client.publish(status_topic, msg);
-            }
-            else if (result == 1)
-            {
+                serializeJson(doc, jsonMessageBuf);
+                client.publish(statusTopic, 1, false, jsonMessageBuf);
+            } else if (result == 1) {
                 strcpy(currentAppletUUID, appid);
 
-                char msg[100];
+                char jsonMessageBuf[100];
                 StaticJsonDocument<100> doc;
                 doc["type"] = "success";
                 doc["next"] = "none";
                 doc["info"] = "applet_displayed";
-                serializeJson(doc, msg);
-                client.publish(status_topic, msg);
-            }
-            else if (result == 2)
-            {
-                char msg[100];
+                serializeJson(doc, jsonMessageBuf);
+                client.publish(statusTopic, 1, false, jsonMessageBuf);
+            } else if (result == 2) {
+                char jsonMessageBuf[100];
                 StaticJsonDocument<100> doc;
                 doc["type"] = "error";
                 doc["info"] = "malformed_header";
-                serializeJson(doc, msg);
-                client.publish(status_topic, msg);
+                serializeJson(doc, jsonMessageBuf);
+                client.publish(statusTopic, 1, false, jsonMessageBuf);
             }
-        }
-        else if (strcmp(command, "device_reboot") == 0)
-        {
+        } else if (strcmp(command, "device_reboot") == 0) {
             ESP.restart();
-        }
-        else if (strcmp(command, "device_reset") == 0)
-        {
+        } else if (strcmp(command, "device_reset") == 0) {
             WiFiManager wm;
             wm.resetSettings();
             ESP.restart();
-        }
-        else if (strcmp(command, "ping") == 0)
-        {
-            char msg[20];
+        } else if (strcmp(command, "ping") == 0) {
+            char jsonMessageBuf[20];
             StaticJsonDocument<20> doc;
             doc["type"] = "pong";
-            serializeJson(doc, msg);
-            client.publish(status_topic, msg);
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
+        }
+    } else if (strcmp(topic, appletTopic) == 0) {
+        pushingAppletFile.write((uint8_t *)payload, len);
+        if (index + len >= total) {
+            char jsonMessageBuf[50];
+            StaticJsonDocument<50> doc;
+            doc["type"] = "success";
+            doc["next"] = "send_chunk";
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
         }
     }
-    else if (strcmp(topic, applet_topic) == 0)
-    {
-        pushingAppletFile.write(payload, length);
-        char msg[50];
-        StaticJsonDocument<50> doc;
-        doc["type"] = "success";
-        doc["next"] = "send_chunk";
-        serializeJson(doc, msg);
-        client.publish(status_topic, msg);
-    }
 }
 
-void configModeCallback(WiFiManager *wm)
-{
-    showApplet("wifi_config");
-}
-
-void matrixLoop(void *parameter)
-{
-    for (;;)
-    {
-        if (currentMode == APPLET)
-        {
-            if (newapplet)
-            {
-                demux = WebPDemux(&webp_data);
-                frame_count = WebPDemuxGetI(demux, WEBP_FF_FRAME_COUNT);
-                webp_flags = WebPDemuxGetI(demux, WEBP_FF_FORMAT_FLAGS);
-                last_frame_duration = 0;
-                last_frame_time = millis() - 10;
-                newapplet = false;
-                current_frame = 1;
-            }
-            else
-            {
-                if (webp_flags & ANIMATION_FLAG)
-                {
-                    if (millis() - last_frame_time > last_frame_duration)
-                    {
-                        if (WebPDemuxGetFrame(demux, current_frame, &iter))
-                        {
-                            if (WebPDecodeRGBAInto(iter.fragment.bytes, iter.fragment.size, tempPixelBuffer, iter.width * iter.height * 4, iter.width * 4) != NULL)
-                            {
+void matrixLoop(void *parameter) {
+    for (;;) {
+        if (hasApplet) {
+            if (newApplet) {
+                webPDemux = WebPDemux(&webPData);
+                appletFrameCount =
+                    WebPDemuxGetI(webPDemux, WEBP_FF_FRAME_COUNT);
+                webPFlags = WebPDemuxGetI(webPDemux, WEBP_FF_FORMAT_FLAGS);
+                lastFrameDuration = 0;
+                lastFrameTime = 0;
+                newApplet = false;
+                currentFrameIndex = 1;
+            } else {
+                if (webPFlags & ANIMATION_FLAG) {
+                    if (millis() - lastFrameTime > lastFrameDuration) {
+                        if (WebPDemuxGetFrame(webPDemux, currentFrameIndex,
+                                              &iter)) {
+                            if (WebPDecodeRGBAInto(iter.fragment.bytes,
+                                                   iter.fragment.size,
+                                                   tempPixelBuffer,
+                                                   iter.width * iter.height * 4,
+                                                   iter.width * 4) != NULL) {
                                 int px = 0;
-                                for (int y = iter.y_offset; y < (iter.y_offset + iter.height); y++)
-                                {
-                                    for (int x = iter.x_offset; x < (iter.x_offset + iter.width); x++)
-                                    {
+                                for (int y = iter.y_offset;
+                                     y < (iter.y_offset + iter.height); y++) {
+                                    for (int x = iter.x_offset;
+                                         x < (iter.x_offset + iter.width);
+                                         x++) {
                                         // go pixel by pixel.
-                                        int pixelOffsetCF = ((y * MATRIX_WIDTH) + x) * 3;
+                                        int pixelOffsetCF =
+                                            ((y * MATRIX_WIDTH) + x) * 3;
                                         int pixelOffsetFT = px * 4;
 
-                                        int alphaValue = tempPixelBuffer[pixelOffsetFT + 3];
+                                        int alphaValue =
+                                            tempPixelBuffer[pixelOffsetFT + 3];
 
-                                        if (alphaValue == 255 && true)
-                                        {
-                                            dma_display.writePixel(x, y, dma_display.color565(tempPixelBuffer[pixelOffsetFT], tempPixelBuffer[pixelOffsetFT + 1], tempPixelBuffer[pixelOffsetFT + 2]));
+                                        if (alphaValue == 255 && true) {
+                                            matrix.writePixel(
+                                                x, y,
+                                                matrix.color565(
+                                                    tempPixelBuffer
+                                                        [pixelOffsetFT],
+                                                    tempPixelBuffer
+                                                        [pixelOffsetFT + 1],
+                                                    tempPixelBuffer
+                                                        [pixelOffsetFT + 2]));
                                         }
 
                                         px++;
                                     }
                                 }
 
-                                last_frame_time = millis();
-                                last_frame_duration = iter.duration;
-                                current_frame++;
-                                if (current_frame > frame_count)
-                                {
-                                    current_frame = 1;
+                                lastFrameTime = millis();
+                                lastFrameDuration = iter.duration;
+                                currentFrameIndex++;
+                                if (currentFrameIndex > appletFrameCount) {
+                                    currentFrameIndex = 1;
                                 }
                             }
-                        }
-                        else
-                        {
-                            currentMode = NONE;
+                        } else {
+                            hasApplet = false;
                         }
                     }
-                }
-                else
-                {
+                } else {
                     // Static WebP
-                    if (WebPDecodeRGBInto(webp_data.bytes, webp_data.size, tempPixelBuffer, MATRIX_HEIGHT * MATRIX_WIDTH * 3, MATRIX_WIDTH * 3) != NULL)
-                    {
-
-                        for (int y = 0; y < MATRIX_HEIGHT; y++)
-                        {
-                            for (int x = 0; x < MATRIX_WIDTH; x++)
-                            {
+                    if (WebPDecodeRGBInto(webPData.bytes, webPData.size,
+                                          tempPixelBuffer,
+                                          MATRIX_HEIGHT * MATRIX_WIDTH * 3,
+                                          MATRIX_WIDTH * 3) != NULL) {
+                        for (int y = 0; y < MATRIX_HEIGHT; y++) {
+                            for (int x = 0; x < MATRIX_WIDTH; x++) {
                                 int pixBitStart = ((y * MATRIX_WIDTH) + x) * 3;
-                                dma_display.writePixel(x, y, dma_display.color565(tempPixelBuffer[pixBitStart], tempPixelBuffer[pixBitStart + 1], tempPixelBuffer[pixBitStart + 2]));
+                                matrix.writePixel(
+                                    x, y,
+                                    matrix.color565(
+                                        tempPixelBuffer[pixBitStart],
+                                        tempPixelBuffer[pixBitStart + 1],
+                                        tempPixelBuffer[pixBitStart + 2]));
                             }
                         }
 
-                        currentMode = NONE;
+                        hasApplet = false;
                     }
                 }
             }
+        }
+
+        if (newStatusApplet) {
+            newStatusApplet = false;
+            showApplet(statusApplet);
         }
 
         vTaskDelay(1);
     }
 }
 
-void connectionLoop(void *parameter)
-{
-    for (;;)
-    {
-        if (otaInProgress)
-        {
-            continue;
-        }
-
-        if (WiFi.isConnected() && WiFi.getMode() == WIFI_STA)
-        {
-            if (!client.connected())
-            {
-                client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
-                if (client.connected())
-                {
-                    client.subscribe(applet_topic);
-                    client.subscribe(command_topic);
-                }
-            }
-        }
-        else
-        {
-            WiFi.reconnect();
-        }
-        vTaskDelay(5000);
-    }
-}
-
-void setup()
-{
+void setup() {
     Serial.begin(115200);
+    Wire.begin();
+    matrix.begin();
+    LittleFS.begin(true);
+    esp32FOTA.setManifestURL(manifestURL);
 
-    dma_display.begin();
-    dma_display.setBrightness8(currentBrightness); // 0-255
-    dma_display.setLatBlanking(3);
-    dma_display.clearScreen();
+    matrix.setBrightness8(currentBrightness);  // 0-255
+    matrix.setLatBlanking(3);
+    matrix.clearScreen();
 
-    if (!LittleFS.begin(true))
-    {
-        return;
-    }
-
-    xTaskCreatePinnedToCore(
-        matrixLoop,   /* Function to implement the task */
-        "MatrixTask", /* Name of the task */
-        3600,         /* Stack size in words */
-        NULL,         /* Task input parameter */
-        1,            /* Priority of the task */
-        &matrixTask,  /* Task handle. */
-        1);           /* Core where the task should run */
+    xTaskCreatePinnedToCore(matrixLoop,   /* Function to implement the task */
+                            "MatrixTask", /* Name of the task */
+                            3600,         /* Stack size in words */
+                            NULL,         /* Task input parameter */
+                            1,            /* Priority of the task */
+                            &matrixTask,  /* Task handle. */
+                            1);           /* Core where the task should run */
 
     showApplet("startup");
 
-    vTaskDelay(500);
+    delay(500);
 
-#ifndef TIDBYT
-    Wire.begin();
-    tslEnabled = true;
-    if (!tsl.begin())
-    {
-        tslEnabled = false;
-    }
-    else
-    {
-        tsl.enableAutoRange(true); /* Auto-gain ... switches automatically between 1x and 16x */
+    tslEnabled = tsl.begin();
+    if (!tslEnabled) {
+        tsl.enableAutoRange(true);
         tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
-    } /* fast but low resolution */
-#endif
-
-    WiFiManager wifiManager;
+    }
 
     uint8_t baseMac[6];
     char macFull[6];
@@ -456,86 +404,61 @@ void setup()
     sprintf(macFull, "%02X%02X%02X", baseMac[3], baseMac[4], baseMac[5]);
     snprintf(hostName, 18, PSTR("SmartMatrix%s"), macFull);
 
-    showApplet("wifi_connecting");
-
     WiFi.setHostname(hostName);
     WiFi.setAutoReconnect(true);
 
-    wifiManager.setConnectTimeout(30);
-    wifiManager.setConfigPortalTimeout(120);
-    wifiManager.setAPCallback(configModeCallback);
-    wifiManager.setCleanConnect(true);
-    wifiManager.autoConnect(hostName);
-
-    ArduinoOTA.setHostname(hostName);
-
-    ArduinoOTA.onStart([]()
-                       {
-                           currentMode = NONE;
-                           otaInProgress = true;
-                           // client.disconnect();
-                       });
-
-    ArduinoOTA.onError([](ota_error_t error)
-                       { ESP.restart(); });
-
-    ArduinoOTA.begin();
-
     esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
     sprintf(macFull, "%02X%02X%02X", baseMac[3], baseMac[4], baseMac[5]);
-    snprintf_P(applet_topic, 26, PSTR("%s/%s/applet"), TOPIC_PREFIX, macFull);
-    snprintf_P(status_topic, 26, PSTR("%s/%s/status"), TOPIC_PREFIX, macFull);
-    snprintf_P(command_topic, 27, PSTR("%s/%s/command"), TOPIC_PREFIX, macFull);
+    snprintf_P(appletTopic, 26, PSTR("smartmatrix/%s/applet"), macFull);
+    snprintf_P(statusTopic, 26, PSTR("smartmatrix/%s/status"), macFull);
+    snprintf_P(commandTopic, 27, PSTR("smartmatrix/%s/command"), macFull);
 
-#ifdef MQTT_SSL
-    wifiClient.setInsecure();
-#endif
+    mqttReconnectTimer =
+        xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void *)0,
+                     reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
+    wifiReconnectTimer =
+        xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void *)0,
+                     reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
 
-    client.setServer(MQTT_HOST, MQTT_PORT);
-    client.setCallback(mqttCallback);
+    WiFi.onEvent(WiFiEvent);
 
-    if (WiFi.isConnected())
-    {
-        showApplet("mqtt_connecting");
-        client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
-        if (client.connected())
-        {
-            showApplet("ready");
-            delay(500);
-            client.subscribe(applet_topic);
-            client.subscribe(command_topic);
-            char msg[30];
+    esp32FOTA.setUpdateFinishedCb([](int partition, bool restart_after) {
+        if (client.connected()) {
             StaticJsonDocument<30> doc;
-            doc["type"] = "boot";
-            serializeJson(doc, msg);
-            client.publish(status_topic, msg);
+            char hbMessage[30];
+            doc["type"] = "ota";
+            doc["info"] = "success";
+            serializeJson(doc, hbMessage);
+            client.publish(statusTopic, 1, false, hbMessage);
         }
 
-        xTaskCreatePinnedToCore(
-            connectionLoop,   /* Function to implement the task */
-            "ConnectionTask", /* Name of the task */
-            3000,             /* Stack size in words */
-            NULL,             /* Task input parameter */
-            0,                /* Priority of the task */
-            &connectionTask,  /* Task handle. */
-            0);               /* Core where the task should run */
-    }
-    else
-    {
-        ESP.restart();
-    }
+        if (restart_after) {
+            ESP.restart();
+        }
+    });
+
+    client.onConnect(onMqttConnect);
+    client.onDisconnect(onMqttDisconnect);
+    client.onMessage(onMqttMessage);
+    client.setServer(MQTT_HOST, MQTT_PORT);
+    client.setCredentials(MQTT_USERNAME, MQTT_PASSWORD);
+
+    connectToWifi();
 }
 
-unsigned long lastHeartbeat = 0;
+void loop() {
+    if (millis() - lastOTACheckTime > 60000 && WiFi.isConnected() &&
+        !otaInProgress) {
+        lastOTACheckTime = millis();
+        bool updateNeeded = esp32FOTA.execHTTPcheck();
+        if (updateNeeded) {
+            otaInProgress = true;
+            esp32FOTA.execOTA();
+        }
+    }
 
-void loop()
-{
-    ArduinoOTA.handle();
-    client.loop();
-
-    if (millis() - lastHeartbeat > 10000)
-    {
-        lastHeartbeat = millis();
+    if (millis() - lastHeartbeatTime > 10000 && client.connected()) {
+        lastHeartbeatTime = millis();
         StaticJsonDocument<150> doc;
         char hbMessage[150];
         doc["type"] = "heartbeat";
@@ -543,44 +466,33 @@ void loop()
         doc["heap"] = esp_get_free_heap_size();
         doc["uptime"] = floor(esp_timer_get_time() / 1000000);
         serializeJson(doc, hbMessage);
-        client.publish(status_topic, hbMessage);
+        client.publish(statusTopic, 1, false, hbMessage);
     }
 
     // Update desired brightness
-    if (millis() - last_check_tsl_time > 500 && tslEnabled)
-    {
+    if (millis() - lastTSLCheckTime > 500 && tslEnabled) {
         sensors_event_t event;
         tsl.getEvent(&event);
 
-        if (event.light > 50)
-        {
-            // low brightness
+        if (event.light > 50) {
             desiredBrightness = 80;
-        }
-        else if (event.light > 0)
-        {
-            // low brightness
+        } else if (event.light > 0) {
             desiredBrightness = 20;
-        }
-        else
-        {
+        } else {
             desiredBrightness = 0;
         }
 
-        last_check_tsl_time = millis();
+        lastTSLCheckTime = millis();
     }
 
-    if (millis() - last_adjust_brightness_time > 10 && currentBrightness != desiredBrightness)
-    {
-        if (currentBrightness > desiredBrightness)
-        {
+    if (millis() - lastAdjustBrightnessTime > 10 &&
+        currentBrightness != desiredBrightness) {
+        if (currentBrightness > desiredBrightness) {
             currentBrightness--;
-        }
-        else
-        {
+        } else {
             currentBrightness++;
         }
-        dma_display.setBrightness8(currentBrightness);
-        last_adjust_brightness_time = millis();
+        matrix.setBrightness8(currentBrightness);
+        lastAdjustBrightnessTime = millis();
     }
 }
