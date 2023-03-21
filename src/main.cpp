@@ -119,11 +119,6 @@ void saveConfigCallback() { markAppletToShow("wifi_connecting"); }
 
 void connectToWifi() {
     markAppletToShow("wifi_connecting");
-    wifiManager.setConnectTimeout(30);
-    wifiManager.setConfigPortalTimeout(120);
-    wifiManager.setAPCallback(configModeCallback);
-    wifiManager.setSaveConfigCallback(saveConfigCallback);
-    wifiManager.autoConnect(hostName);
 }
 
 void connectToMqtt() {
@@ -377,7 +372,7 @@ void setup() {
     esp32FOTA.setManifestURL(manifestURL);
 
     matrix.setBrightness8(currentBrightness);  // 0-255
-    matrix.setLatBlanking(3);
+    matrix.setLatBlanking(0);
     matrix.clearScreen();
 
     xTaskCreatePinnedToCore(matrixLoop,   /* Function to implement the task */
@@ -494,5 +489,13 @@ void loop() {
         }
         matrix.setBrightness8(currentBrightness);
         lastAdjustBrightnessTime = millis();
+    }
+
+    if(!WiFi.isConnected()) {
+        wifiManager.setConnectTimeout(30);
+        wifiManager.setConfigPortalTimeout(120);
+        wifiManager.setAPCallback(configModeCallback);
+        wifiManager.setSaveConfigCallback(saveConfigCallback);
+        wifiManager.autoConnect(hostName);
     }
 }
