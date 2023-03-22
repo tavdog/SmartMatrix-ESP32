@@ -328,7 +328,7 @@ void scheduleLoop(void *parameter) {
             currentAppletID = schedCheckID;
             char newAppletName[5];
             sprintf(newAppletName, "%lu", currentAppletID);
-            int result = markAppletToShow(newAppletName);
+            markAppletToShow(newAppletName);
             currentAppletExecutionStartTime = millis();
             currentAppletExecutionDuration = duration * 1000;
         }
