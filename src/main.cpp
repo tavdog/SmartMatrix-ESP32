@@ -45,6 +45,7 @@ bool newApplet;
 bool hasApplet;
 bool hasSentBootMessage;
 bool newStatusApplet;
+bool needToDecodeSchedule = true;
 bool tslEnabled;
 bool skipStates[100];
 bool pinStates[100];
@@ -202,8 +203,8 @@ void onMqttMessage(char *topic, char *payload,
         if (strcmp(command, "send_app_graphic") == 0) {
             const char *appid = doc["params"]["appid"];
             pushingAppletID = atoi(appid);
-            char tmpFileName[14];
-            sprintf(tmpFileName, "/%lu.tmp", pushingAppletID);
+            char tmpFileName[20];
+            sprintf(tmpFileName, "/%lu.webp.tmp", pushingAppletID);
             pushingAppletFile = LittleFS.open(tmpFileName, FILE_WRITE);
             char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
@@ -213,8 +214,8 @@ void onMqttMessage(char *topic, char *payload,
             client.publish(statusTopic, 1, false, jsonMessageBuf);
         } else if (strcmp(command, "app_graphic_stop") == 0) {
             pushingAppletFile.close();
-            char tmpFileName[14];
-            sprintf(tmpFileName, "/%lu.tmp", pushingAppletID);
+            char tmpFileName[20];
+            sprintf(tmpFileName, "/%lu.webp.tmp", pushingAppletID);
             LittleFS.remove(tmpFileName);
             char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
@@ -225,11 +226,17 @@ void onMqttMessage(char *topic, char *payload,
         } else if (strcmp(command, "app_graphic_sent") == 0) {
             pushingAppletFile.close();
             // Move temp file to real applet
-            char tmpFileName[14];
+            char tmpFileName[20];
             char realFileName[15];
-            sprintf(tmpFileName, "/%lu.tmp", pushingAppletID);
+            sprintf(tmpFileName, "/%lu.webp.tmp", pushingAppletID);
             sprintf(realFileName, "/%lu.webp", pushingAppletID);
             LittleFS.rename(tmpFileName, realFileName);
+
+            if(currentAppletID == pushingAppletID) {
+                char app[20];
+                sprintf(app, "%lu", currentAppletID);
+                markAppletToShow(app);
+            }
 
             char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
@@ -261,35 +268,11 @@ void onMqttMessage(char *topic, char *payload,
             client.publish(statusTopic, 1, false, jsonMessageBuf);
         }
     } else if (strcmp(topic, scheduleTopic) == 0) {
-        StaticJsonDocument<2048> schedule;
-        DeserializationError error = deserializeJson(schedule, payload, len);
-
-        if (error) {
-            char jsonMessageBuf[50];
-            StaticJsonDocument<50> doc;
-            doc["type"] = "error";
-            doc["info"] = "schedule_decode_error";
-            serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
-            return;
-        } else {
-            JsonArray array = schedule["items"].as<JsonArray>();
-            int i = 0;
-            scheduledItemsCount = array.size();
-            for (JsonObject item : array) {
-                durations[i] = item["d"];
-                skipStates[i] = item["s"];
-                pinStates[i] = item["p"];
-                i++;
-            }
-
-            char jsonMessageBuf[200];
-            StaticJsonDocument<200> doc;
-            doc["type"] = "success";
-            doc["info"] = "schedule_received";
-            doc["hash"] = schedule["hash"];
-            serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
+        File scheduleFile = LittleFS.open("/schedule.json.tmp", FILE_APPEND);
+        scheduleFile.write((uint8_t *)payload, len);
+        scheduleFile.close();
+        if (index + len >= total) {
+            needToDecodeSchedule = true;
         }
     }
 }
@@ -322,10 +305,11 @@ void scheduleLoop(void *parameter) {
             currentAppletID = schedCheckID;
             char newAppletName[5];
             sprintf(newAppletName, "%lu", currentAppletID);
-            StaticJsonDocument<30> doc;
-            char hbMessage[30];
-            doc["type"] = "success";
+            StaticJsonDocument<70> doc;
+            char hbMessage[70];
+            doc["type"] = "success"; 
             doc["info"] = "applet_displayed";
+            doc["appid"] = newAppletName;    
             serializeJson(doc, hbMessage);
             client.publish(statusTopic, 1, false, hbMessage);
             markAppletToShow(newAppletName);
@@ -451,15 +435,15 @@ void setup() {
 
     xTaskCreatePinnedToCore(matrixLoop,   /* Function to implement the task */
                             "MatrixTask", /* Name of the task */
-                            3600,         /* Stack size in words */
+                            5000,         /* Stack size in words */
                             NULL,         /* Task input parameter */
-                            1,            /* Priority of the task */
+                            30,           /* Priority of the task */
                             &matrixTask,  /* Task handle. */
                             0);           /* Core where the task should run */
 
     xTaskCreatePinnedToCore(scheduleLoop,   /* Function to implement the task */
                             "ScheduleTask", /* Name of the task */
-                            2000,          /* Stack size in words */
+                            2000,           /* Stack size in words */
                             NULL,           /* Task input parameter */
                             1,              /* Priority of the task */
                             &scheduleTask,  /* Task handle. */
@@ -515,7 +499,8 @@ bool updateStarted;
 unsigned long updateStartTime;
 
 void loop() {
-    if ((millis() - lastOTACheckTime > 60000 || lastOTACheckTime == 0) && WiFi.isConnected() && !updateStarted) {
+    if ((millis() - lastOTACheckTime > 60000 || lastOTACheckTime == 0) &&
+        WiFi.isConnected() && !updateStarted) {
         lastOTACheckTime = millis();
         bool updateNeeded = esp32FOTA.execHTTPcheck();
         if (updateNeeded) {
@@ -525,8 +510,8 @@ void loop() {
         }
     }
 
-    //In case update fucks
-    if(millis() - updateStartTime > 300000 && updateStarted) {
+    // In case update fucks
+    if (millis() - updateStartTime > 300000 && updateStarted) {
         ESP.restart();
     }
 
@@ -547,12 +532,12 @@ void loop() {
     }
 
     // Update desired brightness
-    if (millis() - lastTSLCheckTime > 1500 && tslEnabled) {
+    if (millis() - lastTSLCheckTime > 1000 && tslEnabled) {
         updateLux();
         lastTSLCheckTime = millis();
     }
 
-    if (millis() - lastAdjustBrightnessTime > 30 &&
+    if (millis() - lastAdjustBrightnessTime > 10 &&
         currentBrightness != desiredBrightness) {
         if (currentBrightness > desiredBrightness) {
             currentBrightness--;
@@ -561,6 +546,62 @@ void loop() {
         }
         matrix.setBrightness8(currentBrightness);
         lastAdjustBrightnessTime = millis();
+    }
+
+    if (needToDecodeSchedule && client.connected()) {
+        needToDecodeSchedule = false;
+        File scheduleFile;
+        if(LittleFS.exists("/schedule.json.tmp")) {
+            scheduleFile = LittleFS.open("/schedule.json.tmp", FILE_READ);
+        } else {
+            if(LittleFS.exists("/schedule.json")) {
+                scheduleFile = LittleFS.open("/schedule.json", FILE_READ);
+            } else {
+                return;
+            }
+        }
+
+        StaticJsonDocument<2048> schedule;
+        DeserializationError error = deserializeJson(schedule, scheduleFile);
+
+        if (error) {
+            char jsonMessageBuf[50];
+            StaticJsonDocument<50> doc;
+            doc["type"] = "error";
+            doc["info"] = "schedule_decode_error";
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
+            return;
+        } else {
+            JsonArray array = schedule["items"].as<JsonArray>();
+            int i = 0;
+            scheduledItemsCount = array.size();
+            for (JsonObject item : array) {
+                durations[i] = item["d"];
+                skipStates[i] = item["s"];
+                pinStates[i] = item["p"];
+                i++;
+            }
+
+            scheduleFile.close();
+            LittleFS.rename("/schedule.json.tmp", "/schedule.json");
+
+            if(LittleFS.exists("/schedule.hash")) {
+                LittleFS.remove("/schedule.hash");
+            }
+
+            File hashFile = LittleFS.open("/schedule.hash", FILE_WRITE);
+            hashFile.write(schedule["hash"]);
+            hashFile.close();
+
+            char jsonMessageBuf[200];
+            StaticJsonDocument<200> doc;
+            doc["type"] = "success";
+            doc["info"] = "schedule_received";
+            doc["hash"] = schedule["hash"];
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
+        }
     }
 
     if (!WiFi.isConnected()) {
