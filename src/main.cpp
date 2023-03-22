@@ -303,7 +303,7 @@ void onMqttMessage(char *topic, char *payload,
 void scheduleLoop(void *parameter) {
     int schedCheckID = 0;
     for (;;) {
-        vTaskDelay(100);
+        vTaskDelay(500);
         if (millis() - currentAppletExecutionStartTime >
             currentAppletExecutionDuration) {
             if (scheduledItemsCount == 0) {
@@ -328,11 +328,9 @@ void scheduleLoop(void *parameter) {
             currentAppletID = schedCheckID;
             char newAppletName[5];
             sprintf(newAppletName, "%lu", currentAppletID);
-            int result = showApplet(newAppletName);
-            if (result == 1) {
-                currentAppletExecutionStartTime = millis();
-                currentAppletExecutionDuration = duration * 1000;
-            }
+            int result = markAppletToShow(newAppletName);
+            currentAppletExecutionStartTime = millis();
+            currentAppletExecutionDuration = duration * 1000;
         }
     }
 }
@@ -461,11 +459,11 @@ void setup() {
 
     xTaskCreatePinnedToCore(scheduleLoop,   /* Function to implement the task */
                             "ScheduleTask", /* Name of the task */
-                            10000,          /* Stack size in words */
+                            2000,          /* Stack size in words */
                             NULL,           /* Task input parameter */
                             1,              /* Priority of the task */
                             &scheduleTask,  /* Task handle. */
-                            0);             /* Core where the task should run */
+                            1);             /* Core where the task should run */
 
     showApplet("startup");
 
