@@ -279,7 +279,7 @@ void onMqttMessage(char *topic, char *payload,
             client.publish(statusTopic, 1, false, jsonMessageBuf);
             return;
         } else {
-            JsonArray array = schedule.as<JsonArray>();
+            JsonArray array = schedule["items"].as<JsonArray>();
             int i = 0;
             scheduledItemsCount = array.size();
             for (JsonObject item : array) {
@@ -289,11 +289,11 @@ void onMqttMessage(char *topic, char *payload,
                 i++;
             }
 
-            char jsonMessageBuf[2000];
-            StaticJsonDocument<2048> doc;
+            char jsonMessageBuf[200];
+            StaticJsonDocument<200> doc;
             doc["type"] = "success";
             doc["info"] = "schedule_received";
-            doc["schedule"] = payload;
+            doc["hash"] = schedule["hash"];
             serializeJson(doc, jsonMessageBuf);
             client.publish(statusTopic, 1, false, jsonMessageBuf);
         }
