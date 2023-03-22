@@ -143,7 +143,7 @@ void configModeCallback(WiFiManager *wm) {
 }
 void saveConfigCallback() {
     if (!hasSentBootMessage) {
-        markAppletToShow("wifi_connecting");
+        markAppletToShow("startup");
     }
 }
 
@@ -158,9 +158,6 @@ void WiFiEvent(WiFiEvent_t event) {
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP6:
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            if (hasSentBootMessage) {
-                markAppletToShow("wifi_connected");
-            }
             connectToMqtt();
             break;
 
@@ -188,9 +185,6 @@ void onMqttConnect(bool sessionPresent) {
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
-    if (!hasSentBootMessage) {
-        markAppletToShow("mqtt_disconnected");
-    }
     if (WiFi.isConnected()) {
         xTimerStart(mqttReconnectTimer, 0);
     }
@@ -471,9 +465,7 @@ void setup() {
                             &scheduleTask,  /* Task handle. */
                             1);             /* Core where the task should run */
 
-    showApplet("startup");
-
-    delay(500);
+    markAppletToShow("startup");
 
     uint8_t baseMac[6];
     char macFull[6];
@@ -573,7 +565,7 @@ void loop() {
 
     if (!WiFi.isConnected()) {
         if (!hasSentBootMessage) {
-            markAppletToShow("wifi_connecting");
+            markAppletToShow("startup");
         }
         wifiManager.setConnectTimeout(30);
         wifiManager.setConfigPortalTimeout(120);
