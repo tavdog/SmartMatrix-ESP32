@@ -328,6 +328,12 @@ void scheduleLoop(void *parameter) {
             currentAppletID = schedCheckID;
             char newAppletName[5];
             sprintf(newAppletName, "%lu", currentAppletID);
+            StaticJsonDocument<30> doc;
+            char hbMessage[30];
+            doc["type"] = "success";
+            doc["info"] = "applet_displayed";
+            serializeJson(doc, hbMessage);
+            client.publish(statusTopic, 1, false, hbMessage);
             markAppletToShow(newAppletName);
             currentAppletExecutionStartTime = millis();
             currentAppletExecutionDuration = duration * 1000;
