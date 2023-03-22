@@ -32,22 +32,22 @@ char hostName[18];
 char appletTopic[26];
 char statusTopic[26];
 char commandTopic[27];
+char scheduleTopic[28];
 char appletPath[30];
-char pushingAppletUUID[37];
-char currentAppletUUID[37];
 char statusApplet[30];
 
 WebPData webPData;
 
-int desiredBrightness = 20;
-int currentBrightness = 20;
+int desiredBrightness = 100;
+int currentBrightness = 100;
 
 bool newApplet;
-bool otaInProgress;
 bool hasApplet;
 bool hasSentBootMessage;
 bool newStatusApplet;
 bool tslEnabled;
+bool skipStates[100];
+bool pinStates[100];
 
 AsyncMqttClient client;
 WiFiManager wifiManager;
@@ -60,10 +60,11 @@ WebPIterator iter;
 uint32_t webPFlags;
 uint32_t currentFrameIndex = 1;
 uint32_t appletFrameCount;
+float luxLevel;
 
 TaskHandle_t matrixTask;
+TaskHandle_t scheduleTask;
 TimerHandle_t mqttReconnectTimer;
-TimerHandle_t wifiReconnectTimer;
 
 File pushingAppletFile;
 
@@ -71,8 +72,16 @@ unsigned long lastFrameDuration = 0;
 unsigned long lastFrameTime = 0;
 unsigned long lastTSLCheckTime = 0;
 unsigned long lastAdjustBrightnessTime = 0;
+unsigned long currentAppletExecutionDuration = 0;
+unsigned long currentAppletExecutionStartTime = 0;
 unsigned long lastHeartbeatTime = 0;
 unsigned long lastOTACheckTime = 0;
+
+unsigned long currentAppletID = 0;
+unsigned long pushingAppletID = 0;
+
+unsigned long durations[100];
+unsigned long scheduledItemsCount;
 
 int showApplet(const char *applet) {
     sprintf(appletPath, "/%s.webp", applet);
@@ -109,20 +118,39 @@ int showApplet(const char *applet) {
     }
 }
 
+void updateLux() {
+    sensors_event_t event;
+    tsl.getEvent(&event);
+    luxLevel = event.light;
+    if (luxLevel > 10) {
+        desiredBrightness = 200;
+    } else if (luxLevel > 0) {
+        desiredBrightness = 30;
+    } else {
+        desiredBrightness = 0;
+    }
+}
+
 void markAppletToShow(const char *applet) {
     strcpy(statusApplet, applet);
     newStatusApplet = true;
 }
 
-void configModeCallback(WiFiManager *wm) { markAppletToShow("wifi_config"); }
-void saveConfigCallback() { markAppletToShow("wifi_connecting"); }
-
-void connectToWifi() {
-    markAppletToShow("wifi_connecting");
+void configModeCallback(WiFiManager *wm) {
+    if (!hasSentBootMessage) {
+        markAppletToShow("wifi_config");
+    }
+}
+void saveConfigCallback() {
+    if (!hasSentBootMessage) {
+        markAppletToShow("wifi_connecting");
+    }
 }
 
 void connectToMqtt() {
-    markAppletToShow("mqtt_connecting");
+    if (!hasSentBootMessage) {
+        markAppletToShow("mqtt_connecting");
+    }
     client.connect();
 }
 
@@ -130,15 +158,14 @@ void WiFiEvent(WiFiEvent_t event) {
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP6:
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
-            markAppletToShow("wifi_connected");
+            if (hasSentBootMessage) {
+                markAppletToShow("wifi_connected");
+            }
             connectToMqtt();
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
-            xTimerStop(mqttReconnectTimer,
-                       0);  // ensure we don't reconnect to MQTT while
-                            // reconnecting to Wi-Fi
-            xTimerStart(wifiReconnectTimer, 0);
+            xTimerStop(mqttReconnectTimer, 0);
             break;
         default:
             break;
@@ -146,10 +173,11 @@ void WiFiEvent(WiFiEvent_t event) {
 }
 
 void onMqttConnect(bool sessionPresent) {
-    markAppletToShow("mqtt_connected");
     client.subscribe(commandTopic, 2);
     client.subscribe(appletTopic, 2);
+    client.subscribe(scheduleTopic, 2);
     if (!hasSentBootMessage) {
+        markAppletToShow("mqtt_connected");
         hasSentBootMessage = true;
         char jsonMessageBuf[20];
         StaticJsonDocument<20> doc;
@@ -160,7 +188,9 @@ void onMqttConnect(bool sessionPresent) {
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
-    markAppletToShow("mqtt_disconnected");
+    if (!hasSentBootMessage) {
+        markAppletToShow("mqtt_disconnected");
+    }
     if (WiFi.isConnected()) {
         xTimerStart(mqttReconnectTimer, 0);
     }
@@ -177,9 +207,9 @@ void onMqttMessage(char *topic, char *payload,
         const char *command = doc["command"];
         if (strcmp(command, "send_app_graphic") == 0) {
             const char *appid = doc["params"]["appid"];
-            strcpy(pushingAppletUUID, appid);
+            pushingAppletID = atoi(appid);
             char tmpFileName[14];
-            sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
+            sprintf(tmpFileName, "/%lu.tmp", pushingAppletID);
             pushingAppletFile = LittleFS.open(tmpFileName, FILE_WRITE);
             char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
@@ -190,7 +220,7 @@ void onMqttMessage(char *topic, char *payload,
         } else if (strcmp(command, "app_graphic_stop") == 0) {
             pushingAppletFile.close();
             char tmpFileName[14];
-            sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
+            sprintf(tmpFileName, "/%lu.tmp", pushingAppletID);
             LittleFS.remove(tmpFileName);
             char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
@@ -203,8 +233,8 @@ void onMqttMessage(char *topic, char *payload,
             // Move temp file to real applet
             char tmpFileName[14];
             char realFileName[15];
-            sprintf(tmpFileName, "/%s.tmp", pushingAppletUUID);
-            sprintf(realFileName, "/%s.webp", pushingAppletUUID);
+            sprintf(tmpFileName, "/%lu.tmp", pushingAppletID);
+            sprintf(realFileName, "/%lu.webp", pushingAppletID);
             LittleFS.rename(tmpFileName, realFileName);
 
             char jsonMessageBuf[50];
@@ -213,35 +243,6 @@ void onMqttMessage(char *topic, char *payload,
             doc["next"] = "none";
             serializeJson(doc, jsonMessageBuf);
             client.publish(statusTopic, 1, false, jsonMessageBuf);
-        } else if (strcmp(command, "display_app_graphic") == 0) {
-            const char *appid = doc["params"]["appid"];
-            int result = showApplet(appid);
-            if (result == 0) {
-                // Applet does not exist!
-                char jsonMessageBuf[50];
-                StaticJsonDocument<50> doc;
-                doc["type"] = "error";
-                doc["info"] = "not_found";
-                serializeJson(doc, jsonMessageBuf);
-                client.publish(statusTopic, 1, false, jsonMessageBuf);
-            } else if (result == 1) {
-                strcpy(currentAppletUUID, appid);
-
-                char jsonMessageBuf[100];
-                StaticJsonDocument<100> doc;
-                doc["type"] = "success";
-                doc["next"] = "none";
-                doc["info"] = "applet_displayed";
-                serializeJson(doc, jsonMessageBuf);
-                client.publish(statusTopic, 1, false, jsonMessageBuf);
-            } else if (result == 2) {
-                char jsonMessageBuf[100];
-                StaticJsonDocument<100> doc;
-                doc["type"] = "error";
-                doc["info"] = "malformed_header";
-                serializeJson(doc, jsonMessageBuf);
-                client.publish(statusTopic, 1, false, jsonMessageBuf);
-            }
         } else if (strcmp(command, "device_reboot") == 0) {
             ESP.restart();
         } else if (strcmp(command, "device_reset") == 0) {
@@ -264,6 +265,74 @@ void onMqttMessage(char *topic, char *payload,
             doc["next"] = "send_chunk";
             serializeJson(doc, jsonMessageBuf);
             client.publish(statusTopic, 1, false, jsonMessageBuf);
+        }
+    } else if (strcmp(topic, scheduleTopic) == 0) {
+        StaticJsonDocument<2048> schedule;
+        DeserializationError error = deserializeJson(schedule, payload, len);
+
+        if (error) {
+            char jsonMessageBuf[50];
+            StaticJsonDocument<50> doc;
+            doc["type"] = "error";
+            doc["info"] = "schedule_decode_error";
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
+            return;
+        } else {
+            JsonArray array = schedule.as<JsonArray>();
+            int i = 0;
+            scheduledItemsCount = array.size();
+            for (JsonObject item : array) {
+                durations[i] = item["d"];
+                skipStates[i] = item["s"];
+                pinStates[i] = item["p"];
+                i++;
+            }
+
+            char jsonMessageBuf[2000];
+            StaticJsonDocument<2048> doc;
+            doc["type"] = "success";
+            doc["info"] = "schedule_received";
+            doc["schedule"] = payload;
+            serializeJson(doc, jsonMessageBuf);
+            client.publish(statusTopic, 1, false, jsonMessageBuf);
+        }
+    }
+}
+
+void scheduleLoop(void *parameter) {
+    int schedCheckID = 0;
+    for (;;) {
+        vTaskDelay(100);
+        if (millis() - currentAppletExecutionStartTime >
+            currentAppletExecutionDuration) {
+            if (scheduledItemsCount == 0) {
+                continue;
+            }
+            int tcID = schedCheckID;
+            schedCheckID++;
+
+            if (schedCheckID >= scheduledItemsCount) {
+                schedCheckID = 0;
+                tcID = scheduledItemsCount - 1;
+            }
+
+            bool currentAppletPinned = pinStates[tcID];
+            bool skipApplet = skipStates[schedCheckID];
+            unsigned long duration = durations[schedCheckID];
+
+            if (currentAppletPinned || skipApplet) {
+                continue;
+            }
+
+            currentAppletID = schedCheckID;
+            char newAppletName[5];
+            sprintf(newAppletName, "%lu", currentAppletID);
+            int result = showApplet(newAppletName);
+            if (result == 1) {
+                currentAppletExecutionStartTime = millis();
+                currentAppletExecutionDuration = duration * 1000;
+            }
         }
     }
 }
@@ -360,7 +429,7 @@ void matrixLoop(void *parameter) {
             showApplet(statusApplet);
         }
 
-        vTaskDelay(1);
+        vTaskDelay(10);
     }
 }
 
@@ -371,7 +440,14 @@ void setup() {
     LittleFS.begin(true);
     esp32FOTA.setManifestURL(manifestURL);
 
-    matrix.setBrightness8(currentBrightness);  // 0-255
+    tslEnabled = tsl.begin();
+    if (tslEnabled) {
+        updateLux();
+        tsl.enableAutoRange(true);
+        tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
+    }
+
+    matrix.setBrightness8(desiredBrightness);  // 0-255
     matrix.setLatBlanking(0);
     matrix.clearScreen();
 
@@ -381,17 +457,19 @@ void setup() {
                             NULL,         /* Task input parameter */
                             1,            /* Priority of the task */
                             &matrixTask,  /* Task handle. */
-                            1);           /* Core where the task should run */
+                            0);           /* Core where the task should run */
+
+    xTaskCreatePinnedToCore(scheduleLoop,   /* Function to implement the task */
+                            "ScheduleTask", /* Name of the task */
+                            10000,          /* Stack size in words */
+                            NULL,           /* Task input parameter */
+                            1,              /* Priority of the task */
+                            &scheduleTask,  /* Task handle. */
+                            0);             /* Core where the task should run */
 
     showApplet("startup");
 
     delay(500);
-
-    tslEnabled = tsl.begin();
-    if (!tslEnabled) {
-        tsl.enableAutoRange(true);
-        tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
-    }
 
     uint8_t baseMac[6];
     char macFull[6];
@@ -407,13 +485,11 @@ void setup() {
     snprintf_P(appletTopic, 26, PSTR("smartmatrix/%s/applet"), macFull);
     snprintf_P(statusTopic, 26, PSTR("smartmatrix/%s/status"), macFull);
     snprintf_P(commandTopic, 27, PSTR("smartmatrix/%s/command"), macFull);
+    snprintf_P(scheduleTopic, 28, PSTR("smartmatrix/%s/schedule"), macFull);
 
     mqttReconnectTimer =
         xTimerCreate("mqttTimer", pdMS_TO_TICKS(2000), pdFALSE, (void *)0,
                      reinterpret_cast<TimerCallbackFunction_t>(connectToMqtt));
-    wifiReconnectTimer =
-        xTimerCreate("wifiTimer", pdMS_TO_TICKS(2000), pdFALSE, (void *)0,
-                     reinterpret_cast<TimerCallbackFunction_t>(connectToWifi));
 
     WiFi.onEvent(WiFiEvent);
 
@@ -437,17 +513,13 @@ void setup() {
     client.onMessage(onMqttMessage);
     client.setServer(MQTT_HOST, MQTT_PORT);
     client.setCredentials(MQTT_USERNAME, MQTT_PASSWORD);
-
-    connectToWifi();
 }
 
 void loop() {
-    if (millis() - lastOTACheckTime > 60000 && WiFi.isConnected() &&
-        !otaInProgress) {
+    if (millis() - lastOTACheckTime > 300000 && WiFi.isConnected()) {
         lastOTACheckTime = millis();
         bool updateNeeded = esp32FOTA.execHTTPcheck();
         if (updateNeeded) {
-            otaInProgress = true;
             esp32FOTA.execOTA();
         }
     }
@@ -457,30 +529,24 @@ void loop() {
         StaticJsonDocument<150> doc;
         char hbMessage[150];
         doc["type"] = "heartbeat";
-        doc["appid"] = currentAppletUUID;
+        doc["appid"] = currentAppletID;
         doc["heap"] = esp_get_free_heap_size();
         doc["uptime"] = floor(esp_timer_get_time() / 1000000);
+        doc["appver"] = APP_VERSION;
+        if (tslEnabled) {
+            doc["lux"] = luxLevel;
+        }
         serializeJson(doc, hbMessage);
         client.publish(statusTopic, 1, false, hbMessage);
     }
 
     // Update desired brightness
-    if (millis() - lastTSLCheckTime > 500 && tslEnabled) {
-        sensors_event_t event;
-        tsl.getEvent(&event);
-
-        if (event.light > 50) {
-            desiredBrightness = 80;
-        } else if (event.light > 0) {
-            desiredBrightness = 20;
-        } else {
-            desiredBrightness = 0;
-        }
-
+    if (millis() - lastTSLCheckTime > 1500 && tslEnabled) {
+        updateLux();
         lastTSLCheckTime = millis();
     }
 
-    if (millis() - lastAdjustBrightnessTime > 10 &&
+    if (millis() - lastAdjustBrightnessTime > 30 &&
         currentBrightness != desiredBrightness) {
         if (currentBrightness > desiredBrightness) {
             currentBrightness--;
@@ -491,7 +557,10 @@ void loop() {
         lastAdjustBrightnessTime = millis();
     }
 
-    if(!WiFi.isConnected()) {
+    if (!WiFi.isConnected()) {
+        if (!hasSentBootMessage) {
+            markAppletToShow("wifi_connecting");
+        }
         wifiManager.setConnectTimeout(30);
         wifiManager.setConfigPortalTimeout(120);
         wifiManager.setAPCallback(configModeCallback);
