@@ -177,7 +177,7 @@ void onMqttConnect(bool sessionPresent) {
     client.subscribe(appletTopic, 2);
     client.subscribe(scheduleTopic, 2);
     if (!hasSentBootMessage) {
-        markAppletToShow("mqtt_connected");
+        markAppletToShow("ready");
         hasSentBootMessage = true;
         char jsonMessageBuf[20];
         StaticJsonDocument<20> doc;
