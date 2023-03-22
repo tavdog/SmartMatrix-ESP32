@@ -516,7 +516,7 @@ void setup() {
 }
 
 void loop() {
-    if (millis() - lastOTACheckTime > 300000 && WiFi.isConnected()) {
+    if ((millis() - lastOTACheckTime > 60000 || lastOTACheckTime == 0) && WiFi.isConnected()) {
         lastOTACheckTime = millis();
         bool updateNeeded = esp32FOTA.execHTTPcheck();
         if (updateNeeded) {
