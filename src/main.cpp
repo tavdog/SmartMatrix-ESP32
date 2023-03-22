@@ -513,13 +513,23 @@ void setup() {
     client.setCredentials(MQTT_USERNAME, MQTT_PASSWORD);
 }
 
+bool updateStarted;
+unsigned long updateStartTime;
+
 void loop() {
-    if ((millis() - lastOTACheckTime > 60000 || lastOTACheckTime == 0) && WiFi.isConnected()) {
+    if ((millis() - lastOTACheckTime > 60000 || lastOTACheckTime == 0) && WiFi.isConnected() && !updateStarted) {
         lastOTACheckTime = millis();
         bool updateNeeded = esp32FOTA.execHTTPcheck();
         if (updateNeeded) {
+            updateStarted = true;
+            updateStartTime = millis();
             esp32FOTA.execOTA();
         }
+    }
+
+    //In case update fucks
+    if(millis() - updateStartTime > 300000 && updateStarted) {
+        ESP.restart();
     }
 
     if (millis() - lastHeartbeatTime > 10000 && client.connected()) {
