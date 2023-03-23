@@ -54,8 +54,6 @@ AsyncMqttClient client;
 WiFiManager wifiManager;
 esp32FOTA esp32FOTA("SmartMatrix32", APP_VERSION, false, true);
 
-uint8_t tempPixelBuffer[MATRIX_HEIGHT * MATRIX_WIDTH * 4];
-
 float luxLevel;
 
 TaskHandle_t matrixTask;
@@ -234,18 +232,16 @@ void onMqttMessage(char *topic, char *payload,
             char realFileName[20];
             sprintf(tmpFileName, "/app/%d.webp.tmp", pushingAppletID);
             sprintf(realFileName, "/app/%d.webp", pushingAppletID);
-            LittleFS.rename(tmpFileName, realFileName);
-
-            if (pushingAppletID == currentAppletID) {
+            
+            if(LittleFS.rename(tmpFileName, realFileName)) {
+                char jsonMessageBuf[100];
+                StaticJsonDocument<100> doc;
+                doc["type"] = "success";
+                doc["info"] = "applet_update";
+                doc["next"] = "none";
+                serializeJson(doc, jsonMessageBuf);
+                client.publish(statusTopic, 1, false, jsonMessageBuf);
             }
-
-            char jsonMessageBuf[100];
-            StaticJsonDocument<100> doc;
-            doc["type"] = "success";
-            doc["info"] = "applet_update";
-            doc["next"] = "none";
-            serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
         } else if (strcmp(command, "device_reboot") == 0) {
             ESP.restart();
         } else if (strcmp(command, "device_reset") == 0) {
