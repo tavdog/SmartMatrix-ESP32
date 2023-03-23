@@ -1,5 +1,4 @@
 #include <Arduino.h>
-
 #include <ArduinoLog.h>
 
 extern "C" {
@@ -38,7 +37,7 @@ char commandTopic[27];
 char scheduleTopic[28];
 char asyncAppletName[30];
 
-WebPData webPData;
+WebPData *webPData = nullptr;
 
 int desiredBrightness = 100;
 int currentBrightness = 100;
@@ -49,6 +48,7 @@ bool hasSentBootMessage;
 bool newStatusApplet;
 bool needToDecodeSchedule = true;
 bool tslEnabled;
+bool updateStarted;
 
 AsyncMqttClient client;
 WiFiManager wifiManager;
@@ -69,8 +69,9 @@ unsigned long lastAdjustBrightnessTime = 0;
 unsigned long currentAppletExecutionStartTime = 0;
 unsigned long lastHeartbeatTime = 0;
 unsigned long lastOTACheckTime = 0;
+unsigned long updateStartTime;
 
-int currentAppletID = 0;
+int currentAppletID = -1;
 int pushingAppletID = 0;
 
 int scheduledItemsCount;
@@ -78,36 +79,60 @@ int durations[50];
 bool skipStates[50];
 bool pinStates[50];
 
+void publish(const char *topic, const char *message) {
+    client.publish(topic, 1, false, message);
+    Log.traceln("[smx/mqtt] publishing %s to topic: %s", message, topic);
+}
+
 int showApplet(const char *applet) {
     char appletPath[30];
     sprintf(appletPath, "/%s.webp", applet);
-
+    Log.traceln("[smx/dec] attepting to decode %s", applet);
     if (LittleFS.exists(appletPath)) {
         File file = LittleFS.open(appletPath, FILE_READ);
         // Set buffers
         hasApplet = false;
-        WebPDataClear(&webPData);
+        newApplet = false;
+
+        if (webPData != nullptr) {
+            Log.traceln("[smx/dec] freeing WebPData");
+            WebPDataClear(webPData);
+            webPData = nullptr;
+        }
+
+        Log.traceln("[smx/dec] file %s: %d bytes", applet, (int)file.size());
 
         // setup webp buffer and populate from temporary buffer
-        webPData.size = file.size();
-        webPData.bytes = (uint8_t *)WebPMalloc(file.size());
+        webPData = new WebPData();
+        webPData->size = file.size();
+        webPData->bytes = (uint8_t *)WebPMalloc(file.size());
+
+        if (webPData->bytes == NULL) {
+            Log.traceln("[smx/dec] error mallocing");
+            WebPDataClear(webPData);
+            webPData = nullptr;
+            return 2;
+        }
 
         // Fill buffer!
-        file.readBytes((char *)webPData.bytes, file.size());
+        file.readBytes((char *)webPData->bytes, file.size());
         file.close();
 
         // Attempt to decode applet
         int w = 0;
         int h = 0;
-        int validity = WebPGetInfo(webPData.bytes, webPData.size, &w, &h);
+        int validity = WebPGetInfo(webPData->bytes, webPData->size, &w, &h);
         if (validity) {
+            Log.traceln("[smx/dec] preemptive decode succeeded %s", applet);
             newApplet = true;
             hasApplet = true;
             return 1;
         } else {
+            Log.warningln("[smx/dec] %s invalid", applet);
             return 2;
         }
     } else {
+        Log.warningln("[smx/dec] %s not found", applet);
         return 0;
     }
 }
@@ -131,17 +156,20 @@ void showAppletAsync(const char *applet) {
 }
 
 void configModeCallback(WiFiManager *wm) {
+    Log.traceln("[smx/wifi] entering setup mode");
     if (!hasSentBootMessage) {
         showAppletAsync("setup");
     }
 }
 void saveConfigCallback() {
+    Log.traceln("[smx/wifi] exiting setup mode");
     if (!hasSentBootMessage) {
         showAppletAsync("connect_wifi");
     }
 }
 
 void connectToMqtt() {
+    Log.traceln("[smx/mqtt] connecting to %s:%d", MQTT_HOST, MQTT_PORT);
     if (!hasSentBootMessage) {
         showAppletAsync("connect_cloud");
     }
@@ -152,10 +180,12 @@ void WiFiEvent(WiFiEvent_t event) {
     switch (event) {
         case ARDUINO_EVENT_WIFI_STA_GOT_IP6:
         case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+            Log.traceln("[smx/wifi] got connection event");
             connectToMqtt();
             break;
 
         case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+            Log.traceln("[smx/wifi] got disconnection event");
             xTimerStop(mqttReconnectTimer, 0);
             break;
         default:
@@ -164,6 +194,7 @@ void WiFiEvent(WiFiEvent_t event) {
 }
 
 void onMqttConnect(bool sessionPresent) {
+    Log.traceln("[smx/mqtt] connected to %s:%d", MQTT_HOST, MQTT_PORT);
     client.subscribe(commandTopic, 2);
     client.subscribe(appletTopic, 2);
     client.subscribe(scheduleTopic, 2);
@@ -173,12 +204,13 @@ void onMqttConnect(bool sessionPresent) {
         StaticJsonDocument<20> doc;
         doc["type"] = "boot";
         serializeJson(doc, jsonMessageBuf);
-        client.publish(statusTopic, 1, false, jsonMessageBuf);
+        publish(statusTopic, jsonMessageBuf);
         showAppletAsync("ready");
     }
 }
 
 void onMqttDisconnect(AsyncMqttClientDisconnectReason reason) {
+    Log.traceln("[smx/mqtt] disconnected");
     if (WiFi.isConnected()) {
         xTimerStart(mqttReconnectTimer, 0);
     }
@@ -189,6 +221,7 @@ void onMqttMessage(char *topic, char *payload,
                    const size_t &len, const size_t &index,
                    const size_t &total) {
     if (strcmp(topic, commandTopic) == 0) {
+        Log.traceln("[smx/mqtt] received command: %s", payload);
         // Receiving new applet manifest!
         StaticJsonDocument<200> doc;
         deserializeJson(doc, payload);
@@ -211,7 +244,7 @@ void onMqttMessage(char *topic, char *payload,
             doc["info"] = "applet_update";
             doc["next"] = "send_chunk";
             serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
+            publish(statusTopic, jsonMessageBuf);
         } else if (strcmp(command, "app_graphic_stop") == 0) {
             pushingAppletFile.close();
             char tmpFileName[20];
@@ -223,7 +256,7 @@ void onMqttMessage(char *topic, char *payload,
             doc["info"] = "applet_update";
             doc["next"] = "send_next";
             serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
+            publish(statusTopic, jsonMessageBuf);
         } else if (strcmp(command, "app_graphic_sent") == 0) {
             pushingAppletFile.close();
 
@@ -232,39 +265,45 @@ void onMqttMessage(char *topic, char *payload,
             char realFileName[20];
             sprintf(tmpFileName, "/app/%d.webp.tmp", pushingAppletID);
             sprintf(realFileName, "/app/%d.webp", pushingAppletID);
-            
-            if(LittleFS.rename(tmpFileName, realFileName)) {
+
+            if (LittleFS.rename(tmpFileName, realFileName)) {
                 char jsonMessageBuf[100];
                 StaticJsonDocument<100> doc;
                 doc["type"] = "success";
                 doc["info"] = "applet_update";
                 doc["next"] = "none";
                 serializeJson(doc, jsonMessageBuf);
-                client.publish(statusTopic, 1, false, jsonMessageBuf);
+                publish(statusTopic, jsonMessageBuf);
             }
         } else if (strcmp(command, "device_reboot") == 0) {
             ESP.restart();
         } else if (strcmp(command, "device_reset") == 0) {
-            WiFiManager wm;
-            wm.resetSettings();
+            wifiManager.resetSettings();
             ESP.restart();
         } else if (strcmp(command, "ping") == 0) {
             char jsonMessageBuf[20];
             StaticJsonDocument<20> doc;
             doc["type"] = "pong";
             serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
+            publish(statusTopic, jsonMessageBuf);
         }
     } else if (strcmp(topic, appletTopic) == 0) {
+        if (index == 0) {
+            Log.traceln("[smx/applet] receiving %d bytes for %d", (int)total,
+                        pushingAppletID);
+        }
+        pushingAppletFile.seek(index);
         pushingAppletFile.write((uint8_t *)payload, len);
         if (index + len >= total) {
+            Log.traceln("[smx/applet] stored %d bytes for %d", (int)total,
+                        pushingAppletID);
             char jsonMessageBuf[100];
             StaticJsonDocument<100> doc;
             doc["type"] = "success";
             doc["info"] = "applet_update";
             doc["next"] = "send_chunk";
             serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
+            publish(statusTopic, jsonMessageBuf);
         }
     } else if (strcmp(topic, scheduleTopic) == 0) {
         File scheduleFile =
@@ -272,6 +311,9 @@ void onMqttMessage(char *topic, char *payload,
         scheduleFile.write((uint8_t *)payload, len);
         scheduleFile.close();
         if (index + len >= total) {
+            Log.traceln(
+                "[smx/mqtt] ready to decode received schedule: %d bytes",
+                (int)total);
             needToDecodeSchedule = true;
         }
     }
@@ -281,6 +323,7 @@ bool needForceUpdateApplet;
 int forceUpdateAppletID;
 
 void forceUpdateApplet(int id) {
+    Log.traceln("[smx/applet] forcing update of %d", id);
     forceUpdateAppletID = id;
     needForceUpdateApplet = true;
 }
@@ -307,12 +350,17 @@ void scheduleLoop(void *parameter) {
             int duration = durations[schedCheckID];
 
             if (currentAppletPinned) {
+                Log.traceln("[smx/schedule] %d is pinned", tcID);
+                vTaskDelay(1000);
                 continue;
             }
 
             if (skipApplet) {
+                Log.traceln("[smx/schedule] skipping %d", schedCheckID);
                 continue;
             }
+
+            Log.traceln("[smx/schedule] time to show %d", schedCheckID);
 
             char newAppletName[10];
             sprintf(newAppletName, "app/%d", schedCheckID);
@@ -330,7 +378,7 @@ void scheduleLoop(void *parameter) {
                 doc["info"] = "applet_displayed";
                 doc["appid"] = currentAppletID;
                 serializeJson(doc, hbMessage);
-                client.publish(statusTopic, 1, false, hbMessage);
+                publish(statusTopic, hbMessage);
             } else if (result == 2) {
                 forceUpdateApplet(schedCheckID);
             }
@@ -342,54 +390,61 @@ void matrixLoop(void *parameter) {
     unsigned long animStartTS = 0;
     int lastFrameTimestamp = 0;
     int currentFrame = 0;
+    int errorCount = 0;
+    WebPAnimDecoderOptions dec_options;
+    WebPAnimDecoderOptionsInit(&dec_options);
     WebPAnimDecoder *dec = NULL;
     for (;;) {
         if (hasApplet) {
-            if (newApplet) {
+            if (newApplet && webPData != nullptr) {
+                Log.traceln("[smx/display] new applet");
                 newApplet = false;
                 WebPAnimDecoderDelete(dec);
-                WebPAnimDecoderOptions dec_options;
-                WebPAnimDecoderOptionsInit(&dec_options);
-                dec = WebPAnimDecoderNew(&webPData, &dec_options);
+                dec = WebPAnimDecoderNew(webPData, &dec_options);
                 animStartTS = millis();
                 lastFrameTimestamp = 0;
                 currentFrame = 0;
+                errorCount = 0;
             } else {
                 if (millis() - animStartTS > lastFrameTimestamp) {
-                    uint8_t *buf;
-                    bool hasMoreFrames = WebPAnimDecoderHasMoreFrames(dec);
-
-                    if(currentFrame == 0) {
+                    if (currentFrame == 0) {
                         animStartTS = millis();
                         lastFrameTimestamp = 0;
                     }
 
-                    if (WebPAnimDecoderHasMoreFrames(dec) && WebPAnimDecoderGetNext(dec, &buf, &lastFrameTimestamp)) {
-                        int px = 0;
-                        for (int y = 0; y < MATRIX_HEIGHT; y++) {
-                            for (int x = 0; x < MATRIX_WIDTH; x++) {
-                                // go pixel by pixel.
-                                int pixelOffsetFT = px * 4;
+                    bool hasMoreFrames = WebPAnimDecoderHasMoreFrames(dec);
 
-                                matrix->writePixel(
-                                    x, y,
-                                    matrix->color565(
-                                        buf[pixelOffsetFT],
-                                        buf[pixelOffsetFT + 1],
-                                        buf[pixelOffsetFT + 2]));
+                    if (hasMoreFrames) {
+                        uint8_t *buf;
+                        if (WebPAnimDecoderGetNext(dec, &buf,
+                                                   &lastFrameTimestamp)) {
+                            int px = 0;
+                            for (int y = 0; y < MATRIX_HEIGHT; y++) {
+                                for (int x = 0; x < MATRIX_WIDTH; x++) {
+                                    matrix->writePixel(
+                                        x, y,
+                                        matrix->color565(buf[px * 4],
+                                                         buf[px * 4 + 1],
+                                                         buf[px * 4 + 2]));
 
-                                px++;
+                                    px++;
+                                }
+                            }
+                            currentFrame++;
+                            if (!WebPAnimDecoderHasMoreFrames(dec)) {
+                                currentFrame = 0;
+                                WebPAnimDecoderReset(dec);
+                            }
+                        } else {
+                            Log.errorln("[smx/display] decode error for %d",
+                                        currentAppletID);
+                            errorCount++;
+                            if (errorCount > 3) {
+                                forceUpdateApplet(currentAppletID);
+                                currentAppletExecutionStartTime = 0;
+                                hasApplet = false;
                             }
                         }
-                        currentFrame++;
-                        if(!WebPAnimDecoderHasMoreFrames(dec)) {
-                            currentFrame = 0;
-                            WebPAnimDecoderReset(dec);
-                        }
-                    } else {
-                        forceUpdateApplet(currentAppletID);
-                        currentAppletExecutionStartTime = 0;
-                        hasApplet = false;
                     }
                 }
             }
@@ -407,6 +462,7 @@ void matrixLoop(void *parameter) {
 void setup() {
     Serial.begin(115200);
     Log.begin(LOG_LEVEL_VERBOSE, &Serial);
+    Log.noticeln("[smx/setup] starting up");
     HUB75_I2S_CFG::i2s_pins _pins = {25, 26, 27, 14, 12, 13, 23,
                                      19, 5,  17, -1, 4,  15, 16};
     HUB75_I2S_CFG mxconfig(64, 32, 1, _pins);
@@ -414,24 +470,35 @@ void setup() {
     matrix = new MatrixPanel_I2S_DMA(mxconfig);
     matrix->begin();
 
+    Log.traceln("[smx/setup] matrix begin");
+
     Wire.begin();
-    LittleFS.begin(true);
+    if (!LittleFS.begin(true)) {
+        Log.errorln("[smx/setup] couldn't init littlefs");
+        ESP.restart();
+    }
+
     LittleFS.mkdir("/app");
     esp32FOTA.setManifestURL(manifestURL);
 
-    // tslEnabled = tsl.begin();
+    Log.traceln("[smx/setup] ota manifest: %s", manifestURL);
+
+    tslEnabled = tsl.begin();
     if (tslEnabled) {
+        Log.traceln("[smx/setup] tsl enabled");
         updateLux();
         tsl.enableAutoRange(true);
         tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
     }
+
+    wifiManager.setDebugOutput(false);
 
     matrix->setBrightness8(desiredBrightness);  // 0-255
     matrix->clearScreen();
 
     xTaskCreatePinnedToCore(matrixLoop,   /* Function to implement the task */
                             "MatrixTask", /* Name of the task */
-                            3500,         /* Stack size in words */
+                            5000,         /* Stack size in words */
                             NULL,         /* Task input parameter */
                             30,           /* Priority of the task */
                             &matrixTask,  /* Task handle. */
@@ -470,13 +537,15 @@ void setup() {
     WiFi.onEvent(WiFiEvent);
 
     esp32FOTA.setUpdateFinishedCb([](int partition, bool restart_after) {
+        Log.noticeln("[smx/ota] update finished, took %lms",
+                     millis() - updateStartTime);
         if (client.connected()) {
             StaticJsonDocument<50> doc;
             char hbMessage[50];
             doc["type"] = "ota";
             doc["info"] = "success";
             serializeJson(doc, hbMessage);
-            client.publish(statusTopic, 1, false, hbMessage);
+            publish(statusTopic, hbMessage);
         }
 
         if (restart_after) {
@@ -491,24 +560,33 @@ void setup() {
     client.setCredentials(MQTT_USERNAME, MQTT_PASSWORD);
 }
 
-bool updateStarted;
-unsigned long updateStartTime;
+unsigned long lastReportHeapTime = 0;
 
 void loop() {
     // OTA
     if ((millis() - lastOTACheckTime > 60000 || lastOTACheckTime == 0) &&
         WiFi.isConnected() && !updateStarted) {
+        Log.traceln("[smx/ota] checking for update");
         lastOTACheckTime = millis();
         bool updateNeeded = esp32FOTA.execHTTPcheck();
         if (updateNeeded) {
+            Log.noticeln("[smx/ota] starting update at %l", millis());
             updateStarted = true;
             updateStartTime = millis();
             esp32FOTA.execOTA();
+        } else {
+            Log.traceln("[smx/ota] up to date, running ver %d", APP_VERSION);
         }
+    }
+
+    if (millis() - lastReportHeapTime > 10000) {
+        lastReportHeapTime = millis();
+        Log.traceln("[smx/loop] free heap: %l", (long)esp_get_free_heap_size());
     }
 
     // In case update fucks
     if (millis() - updateStartTime > 300000 && updateStarted) {
+        Log.errorln("[smx/ota] update timeout");
         ESP.restart();
     }
 
@@ -526,7 +604,7 @@ void loop() {
             doc["lux"] = luxLevel;
         }
         serializeJson(doc, hbMessage);
-        client.publish(statusTopic, 1, false, hbMessage);
+        publish(statusTopic, hbMessage);
     }
 
     // Update lux level
@@ -549,12 +627,15 @@ void loop() {
 
     // decode schedule
     if (needToDecodeSchedule && client.connected()) {
+        Log.traceln("[smx/schedule] decoding");
         needToDecodeSchedule = false;
         File scheduleFile;
         if (LittleFS.exists("/app/schedule.json.tmp")) {
+            Log.traceln("[smx/schedule] using tmp schedule");
             scheduleFile = LittleFS.open("/app/schedule.json.tmp", FILE_READ);
         } else {
             if (LittleFS.exists("/app/schedule.json")) {
+                Log.traceln("[smx/schedule] using cached schedule");
                 scheduleFile = LittleFS.open("/app/schedule.json", FILE_READ);
             } else {
                 return;
@@ -565,17 +646,20 @@ void loop() {
         DeserializationError error = deserializeJson(schedule, scheduleFile);
 
         if (error) {
+            Log.traceln("[smx/schedule] decode error");
             char jsonMessageBuf[50];
             StaticJsonDocument<50> doc;
             doc["type"] = "error";
             doc["info"] = "schedule_decode_error";
             serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
+            publish(statusTopic, jsonMessageBuf);
             return;
         } else {
             JsonArray array = schedule["items"].as<JsonArray>();
             int i = 0;
             scheduledItemsCount = array.size();
+            Log.traceln("[smx/schedule] decoded schedule, %d items",
+                        scheduledItemsCount);
             for (JsonObject item : array) {
                 durations[i] = item["d"];
                 skipStates[i] = item["s"];
@@ -590,6 +674,8 @@ void loop() {
                 LittleFS.remove("/app/schedule.hash");
             }
 
+            Log.traceln("[smx/schedule] writing hash: %s", schedule["hash"]);
+
             File hashFile = LittleFS.open("/app/schedule.hash", FILE_WRITE);
             hashFile.write(schedule["hash"]);
             hashFile.close();
@@ -600,12 +686,13 @@ void loop() {
             doc["info"] = "schedule_received";
             doc["hash"] = schedule["hash"];
             serializeJson(doc, jsonMessageBuf);
-            client.publish(statusTopic, 1, false, jsonMessageBuf);
+            publish(statusTopic, jsonMessageBuf);
         }
     }
 
     // show full boot anim
     if (!WiFi.isConnected() && millis() > 5700) {
+        Log.traceln("[smx/wifi] wifi task");
         if (!hasSentBootMessage) {
             showAppletAsync("connect_wifi");
         }
@@ -625,6 +712,6 @@ void loop() {
         doc["info"] = "malformed_applet";
         doc["appid"] = forceUpdateAppletID;
         serializeJson(doc, hbMessage);
-        client.publish(statusTopic, 1, false, hbMessage);
+        publish(statusTopic, hbMessage);
     }
 }
