@@ -36,6 +36,8 @@ char statusTopic[26];
 char commandTopic[27];
 char scheduleTopic[28];
 char asyncAppletName[30];
+char tmpFileName[20];
+char realFileName[20];
 
 WebPData *webPData = nullptr;
 
@@ -71,13 +73,16 @@ unsigned long lastHeartbeatTime = 0;
 unsigned long lastOTACheckTime = 0;
 unsigned long updateStartTime;
 
-int currentAppletID = -1;
+int currentAppletID = 0;
 int pushingAppletID = 0;
 
 int scheduledItemsCount;
 int durations[50];
 bool skipStates[50];
 bool pinStates[50];
+StaticJsonDocument<2048> docIn;
+StaticJsonDocument<200> docOut;
+char jsonMessageBuf[200];
 
 void publish(const char *topic, const char *message) {
     client.publish(topic, 1, false, message);
@@ -108,14 +113,18 @@ int showApplet(const char *applet) {
         webPData->bytes = (uint8_t *)WebPMalloc(file.size());
 
         if (webPData->bytes == NULL) {
-            Log.traceln("[smx/dec] error mallocing");
+            Log.errorln("[smx/dec] error mallocing");
             WebPDataClear(webPData);
             webPData = nullptr;
             return 2;
         }
 
         // Fill buffer!
-        file.readBytes((char *)webPData->bytes, file.size());
+        int i = 0;
+        while(file.available()) {
+            memset((void *) (webPData->bytes + i), file.read(), 1);
+            i++;
+        }
         file.close();
 
         // Attempt to decode applet
@@ -123,12 +132,12 @@ int showApplet(const char *applet) {
         int h = 0;
         int validity = WebPGetInfo(webPData->bytes, webPData->size, &w, &h);
         if (validity) {
-            Log.traceln("[smx/dec] preemptive decode succeeded %s", applet);
+            Log.traceln("[smx/dec] preemptive decoding succeeded for %s", applet);
             newApplet = true;
             hasApplet = true;
             return 1;
         } else {
-            Log.warningln("[smx/dec] %s invalid", applet);
+            Log.errorln("[smx/dec] preemptive decoding failed for %s", applet);
             return 2;
         }
     } else {
@@ -200,10 +209,9 @@ void onMqttConnect(bool sessionPresent) {
     client.subscribe(scheduleTopic, 2);
     if (!hasSentBootMessage) {
         hasSentBootMessage = true;
-        char jsonMessageBuf[20];
-        StaticJsonDocument<20> doc;
-        doc["type"] = "boot";
-        serializeJson(doc, jsonMessageBuf);
+        docOut.clear();
+        docOut["type"] = "boot";
+        serializeJson(docOut, jsonMessageBuf);
         publish(statusTopic, jsonMessageBuf);
         showAppletAsync("ready");
     }
@@ -223,14 +231,12 @@ void onMqttMessage(char *topic, char *payload,
     if (strcmp(topic, commandTopic) == 0) {
         Log.traceln("[smx/mqtt] received command: %s", payload);
         // Receiving new applet manifest!
-        StaticJsonDocument<200> doc;
-        deserializeJson(doc, payload);
-        const char *command = doc["command"];
-        if (strcmp(command, "send_app_graphic") == 0) {
-            const char *appid = doc["params"]["appid"];
-            pushingAppletID = atoi(appid);
 
-            char tmpFileName[20];
+        deserializeJson(docIn, payload);
+        const char *command = docIn["command"];
+        if (strcmp(command, "send_app_graphic") == 0) {
+            pushingAppletID = atoi(docIn["params"]["appid"]);
+
             sprintf(tmpFileName, "/app/%d.webp.tmp", pushingAppletID);
 
             if (LittleFS.exists(tmpFileName)) {
@@ -238,41 +244,35 @@ void onMqttMessage(char *topic, char *payload,
             }
 
             pushingAppletFile = LittleFS.open(tmpFileName, FILE_WRITE);
-            char jsonMessageBuf[100];
-            StaticJsonDocument<100> doc;
-            doc["type"] = "success";
-            doc["info"] = "applet_update";
-            doc["next"] = "send_chunk";
-            serializeJson(doc, jsonMessageBuf);
+            docOut.clear();
+            docOut["type"] = "success";
+            docOut["info"] = "applet_update";
+            docOut["next"] = "send_chunk";
+            serializeJson(docOut, jsonMessageBuf);
             publish(statusTopic, jsonMessageBuf);
         } else if (strcmp(command, "app_graphic_stop") == 0) {
             pushingAppletFile.close();
-            char tmpFileName[20];
+
             sprintf(tmpFileName, "/app/%d.webp.tmp", pushingAppletID);
             LittleFS.remove(tmpFileName);
-            char jsonMessageBuf[100];
-            StaticJsonDocument<100> doc;
-            doc["type"] = "success";
-            doc["info"] = "applet_update";
-            doc["next"] = "send_next";
-            serializeJson(doc, jsonMessageBuf);
+            docOut.clear();
+            docOut["type"] = "success";
+            docOut["info"] = "applet_update";
+            docOut["next"] = "send_next";
+            serializeJson(docOut, jsonMessageBuf);
             publish(statusTopic, jsonMessageBuf);
         } else if (strcmp(command, "app_graphic_sent") == 0) {
             pushingAppletFile.close();
 
             // Move temp file to real applet
-            char tmpFileName[20];
-            char realFileName[20];
-            sprintf(tmpFileName, "/app/%d.webp.tmp", pushingAppletID);
             sprintf(realFileName, "/app/%d.webp", pushingAppletID);
 
             if (LittleFS.rename(tmpFileName, realFileName)) {
-                char jsonMessageBuf[100];
-                StaticJsonDocument<100> doc;
-                doc["type"] = "success";
-                doc["info"] = "applet_update";
-                doc["next"] = "none";
-                serializeJson(doc, jsonMessageBuf);
+                docOut.clear();
+                docOut["type"] = "success";
+                docOut["info"] = "applet_update";
+                docOut["next"] = "none";
+                serializeJson(docOut, jsonMessageBuf);
                 publish(statusTopic, jsonMessageBuf);
             }
         } else if (strcmp(command, "device_reboot") == 0) {
@@ -281,10 +281,9 @@ void onMqttMessage(char *topic, char *payload,
             wifiManager.resetSettings();
             ESP.restart();
         } else if (strcmp(command, "ping") == 0) {
-            char jsonMessageBuf[20];
-            StaticJsonDocument<20> doc;
-            doc["type"] = "pong";
-            serializeJson(doc, jsonMessageBuf);
+            docOut.clear();
+            docOut["type"] = "pong";
+            serializeJson(docOut, jsonMessageBuf);
             publish(statusTopic, jsonMessageBuf);
         }
     } else if (strcmp(topic, appletTopic) == 0) {
@@ -297,12 +296,11 @@ void onMqttMessage(char *topic, char *payload,
         if (index + len >= total) {
             Log.traceln("[smx/applet] stored %d bytes for %d", (int)total,
                         pushingAppletID);
-            char jsonMessageBuf[100];
-            StaticJsonDocument<100> doc;
-            doc["type"] = "success";
-            doc["info"] = "applet_update";
-            doc["next"] = "send_chunk";
-            serializeJson(doc, jsonMessageBuf);
+            docOut.clear();
+            docOut["type"] = "success";
+            docOut["info"] = "applet_update";
+            docOut["next"] = "send_chunk";
+            serializeJson(docOut, jsonMessageBuf);
             publish(statusTopic, jsonMessageBuf);
         }
     } else if (strcmp(topic, scheduleTopic) == 0) {
@@ -317,6 +315,8 @@ void onMqttMessage(char *topic, char *payload,
             needToDecodeSchedule = true;
         }
     }
+    docIn.clear();
+    docIn.garbageCollect();
 }
 
 bool needForceUpdateApplet;
@@ -329,14 +329,15 @@ void forceUpdateApplet(int id) {
 }
 
 void scheduleLoop(void *parameter) {
-    int schedCheckID = 0;
+    int schedCheckID = -1;
     for (;;) {
-        vTaskDelay(500);
+        vTaskDelay(1000);
         if (millis() - currentAppletExecutionStartTime >
             currentAppletExecutionDuration) {
             if (scheduledItemsCount == 0) {
                 continue;
             }
+
             int tcID = schedCheckID;
             schedCheckID++;
 
@@ -351,7 +352,6 @@ void scheduleLoop(void *parameter) {
 
             if (currentAppletPinned) {
                 Log.traceln("[smx/schedule] %d is pinned", tcID);
-                vTaskDelay(1000);
                 continue;
             }
 
@@ -372,13 +372,12 @@ void scheduleLoop(void *parameter) {
                 currentAppletExecutionStartTime = millis();
                 currentAppletExecutionDuration = duration * 1000;
 
-                StaticJsonDocument<70> doc;
-                char hbMessage[70];
-                doc["type"] = "success";
-                doc["info"] = "applet_displayed";
-                doc["appid"] = currentAppletID;
-                serializeJson(doc, hbMessage);
-                publish(statusTopic, hbMessage);
+                docOut.clear();
+                docOut["type"] = "success";
+                docOut["info"] = "applet_displayed";
+                docOut["appid"] = currentAppletID;
+                serializeJson(docOut, jsonMessageBuf);
+                publish(statusTopic, jsonMessageBuf);
             } else if (result == 2) {
                 forceUpdateApplet(schedCheckID);
             }
@@ -401,6 +400,10 @@ void matrixLoop(void *parameter) {
                 newApplet = false;
                 WebPAnimDecoderDelete(dec);
                 dec = WebPAnimDecoderNew(webPData, &dec_options);
+                if(dec == NULL) {
+                    hasApplet = false;
+                    continue;
+                }
                 animStartTS = millis();
                 lastFrameTimestamp = 0;
                 currentFrame = 0;
@@ -454,8 +457,8 @@ void matrixLoop(void *parameter) {
             newStatusApplet = false;
             showApplet(asyncAppletName);
         }
-
-        vTaskDelay(10);
+        
+        vTaskDelay(30);
     }
 }
 
@@ -466,6 +469,9 @@ void setup() {
     HUB75_I2S_CFG::i2s_pins _pins = {25, 26, 27, 14, 12, 13, 23,
                                      19, 5,  17, -1, 4,  15, 16};
     HUB75_I2S_CFG mxconfig(64, 32, 1, _pins);
+    mxconfig.i2sspeed = HUB75_I2S_CFG::clk_speed::HZ_8M;
+    mxconfig.min_refresh_rate = 30;
+    mxconfig.setPixelColorDepthBits(6);
 
     matrix = new MatrixPanel_I2S_DMA(mxconfig);
     matrix->begin();
@@ -498,7 +504,7 @@ void setup() {
 
     xTaskCreatePinnedToCore(matrixLoop,   /* Function to implement the task */
                             "MatrixTask", /* Name of the task */
-                            5000,         /* Stack size in words */
+                            3500,         /* Stack size in words */
                             NULL,         /* Task input parameter */
                             30,           /* Priority of the task */
                             &matrixTask,  /* Task handle. */
@@ -539,14 +545,6 @@ void setup() {
     esp32FOTA.setUpdateFinishedCb([](int partition, bool restart_after) {
         Log.noticeln("[smx/ota] update finished, took %lms",
                      millis() - updateStartTime);
-        if (client.connected()) {
-            StaticJsonDocument<50> doc;
-            char hbMessage[50];
-            doc["type"] = "ota";
-            doc["info"] = "success";
-            serializeJson(doc, hbMessage);
-            publish(statusTopic, hbMessage);
-        }
 
         if (restart_after) {
             ESP.restart();
@@ -568,8 +566,7 @@ void loop() {
         WiFi.isConnected() && !updateStarted) {
         Log.traceln("[smx/ota] checking for update");
         lastOTACheckTime = millis();
-        bool updateNeeded = esp32FOTA.execHTTPcheck();
-        if (updateNeeded) {
+        if (esp32FOTA.execHTTPcheck()) {
             Log.noticeln("[smx/ota] starting update at %l", millis());
             updateStarted = true;
             updateStartTime = millis();
@@ -581,6 +578,8 @@ void loop() {
 
     if (millis() - lastReportHeapTime > 10000) {
         lastReportHeapTime = millis();
+        docOut.garbageCollect();
+        docIn.garbageCollect();
         Log.traceln("[smx/loop] free heap: %l", (long)esp_get_free_heap_size());
     }
 
@@ -593,18 +592,17 @@ void loop() {
     // Heartbeat
     if (millis() - lastHeartbeatTime > 10000 && client.connected()) {
         lastHeartbeatTime = millis();
-        StaticJsonDocument<150> doc;
-        char hbMessage[150];
-        doc["type"] = "heartbeat";
-        doc["appid"] = currentAppletID;
-        doc["heap"] = esp_get_free_heap_size();
-        doc["uptime"] = floor(esp_timer_get_time() / 1000000);
-        doc["appver"] = APP_VERSION;
+        docOut.clear();
+        docOut["type"] = "heartbeat";
+        docOut["appid"] = currentAppletID;
+        docOut["heap"] = esp_get_free_heap_size();
+        docOut["uptime"] = floor(esp_timer_get_time() / 1000000);
+        docOut["appver"] = APP_VERSION;
         if (tslEnabled) {
-            doc["lux"] = luxLevel;
+            docOut["lux"] = luxLevel;
         }
-        serializeJson(doc, hbMessage);
-        publish(statusTopic, hbMessage);
+        serializeJson(docOut, jsonMessageBuf);
+        publish(statusTopic, jsonMessageBuf);
     }
 
     // Update lux level
@@ -642,20 +640,18 @@ void loop() {
             }
         }
 
-        StaticJsonDocument<2048> schedule;
-        DeserializationError error = deserializeJson(schedule, scheduleFile);
+        DeserializationError error = deserializeJson(docIn, scheduleFile);
 
         if (error) {
             Log.traceln("[smx/schedule] decode error");
-            char jsonMessageBuf[50];
-            StaticJsonDocument<50> doc;
-            doc["type"] = "error";
-            doc["info"] = "schedule_decode_error";
-            serializeJson(doc, jsonMessageBuf);
+            docOut.clear();
+            docOut["type"] = "error";
+            docOut["info"] = "schedule_decode_error";
+            serializeJson(docOut, jsonMessageBuf);
             publish(statusTopic, jsonMessageBuf);
             return;
         } else {
-            JsonArray array = schedule["items"].as<JsonArray>();
+            JsonArray array = docIn["items"].as<JsonArray>();
             int i = 0;
             scheduledItemsCount = array.size();
             Log.traceln("[smx/schedule] decoded schedule, %d items",
@@ -667,6 +663,7 @@ void loop() {
                 i++;
             }
 
+
             scheduleFile.close();
             LittleFS.rename("/app/schedule.json.tmp", "/app/schedule.json");
 
@@ -674,18 +671,21 @@ void loop() {
                 LittleFS.remove("/app/schedule.hash");
             }
 
-            Log.traceln("[smx/schedule] writing hash: %s", schedule["hash"]);
+            Log.traceln("[smx/schedule] writing hash: %s", docIn["hash"]);
 
             File hashFile = LittleFS.open("/app/schedule.hash", FILE_WRITE);
-            hashFile.write(schedule["hash"]);
+            hashFile.write(docIn["hash"]);
             hashFile.close();
 
-            char jsonMessageBuf[200];
-            StaticJsonDocument<200> doc;
-            doc["type"] = "success";
-            doc["info"] = "schedule_received";
-            doc["hash"] = schedule["hash"];
-            serializeJson(doc, jsonMessageBuf);
+            docOut.clear();
+            docOut["type"] = "success";
+            docOut["info"] = "schedule_received";
+            docOut["hash"] = docIn["hash"];
+            serializeJson(docOut, jsonMessageBuf);
+
+            docIn.clear();
+            docIn.garbageCollect();
+
             publish(statusTopic, jsonMessageBuf);
         }
     }
@@ -706,12 +706,11 @@ void loop() {
     // if applet had an error
     if (needForceUpdateApplet) {
         needForceUpdateApplet = false;
-        StaticJsonDocument<70> doc;
-        char hbMessage[70];
-        doc["type"] = "error";
-        doc["info"] = "malformed_applet";
-        doc["appid"] = forceUpdateAppletID;
-        serializeJson(doc, hbMessage);
-        publish(statusTopic, hbMessage);
+        docOut.clear();
+        docOut["type"] = "error";
+        docOut["info"] = "malformed_applet";
+        docOut["appid"] = forceUpdateAppletID;
+        serializeJson(docOut, jsonMessageBuf);
+        publish(statusTopic, jsonMessageBuf);
     }
 }
