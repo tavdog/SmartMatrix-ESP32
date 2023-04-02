@@ -23,9 +23,12 @@ extern "C" {
 #include "secrets.h"
 
 const char *manifestURL =
-    "https://pub-34eaf0d2dcbb40c396065db28dcc4418.r2.dev/manifest.json";
+    "http://pub-34eaf0d2dcbb40c396065db28dcc4418.r2.dev/manifest.json";
 
-MatrixPanel_I2S_DMA *matrix = nullptr;
+HUB75_I2S_CFG::i2s_pins _pins = {25, 26, 27, 14, 12, 13, 23,
+                                 19, 5,  17, -1, 4,  15, 16};
+HUB75_I2S_CFG mxconfig(64, 32, 1, _pins);
+MatrixPanel_I2S_DMA matrix = MatrixPanel_I2S_DMA(mxconfig);
 
 Adafruit_TSL2561_Unified tsl =
     Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
@@ -39,7 +42,10 @@ char asyncAppletName[30];
 char tmpFileName[20];
 char realFileName[20];
 
-WebPData *webPData = nullptr;
+static uint8_t spriteBuffer[60000];
+static uint8_t decBuffer[4 * MATRIX_WIDTH * MATRIX_HEIGHT];
+static WebPData webPData;
+WebPAnimDecoder *dec = NULL;
 
 int desiredBrightness = 100;
 int currentBrightness = 100;
@@ -99,40 +105,21 @@ int showApplet(const char *applet) {
         hasApplet = false;
         newApplet = false;
 
-        if (webPData != nullptr) {
-            Log.traceln("[smx/dec] freeing WebPData");
-            WebPDataClear(webPData);
-            webPData = nullptr;
-        }
-
         Log.traceln("[smx/dec] file %s: %d bytes", applet, (int)file.size());
 
-        // setup webp buffer and populate from temporary buffer
-        webPData = new WebPData();
-        webPData->size = file.size();
-        webPData->bytes = (uint8_t *)WebPMalloc(file.size());
-
-        if (webPData->bytes == NULL) {
-            Log.errorln("[smx/dec] error mallocing");
-            WebPDataClear(webPData);
-            webPData = nullptr;
-            return 2;
-        }
-
         // Fill buffer!
-        int i = 0;
-        while(file.available()) {
-            memset((void *) (webPData->bytes + i), file.read(), 1);
-            i++;
-        }
-        file.close();
+        file.readBytes((char *)spriteBuffer, file.size());
+
+        webPData.size = file.size();
+        webPData.bytes = spriteBuffer;
 
         // Attempt to decode applet
         int w = 0;
         int h = 0;
-        int validity = WebPGetInfo(webPData->bytes, webPData->size, &w, &h);
+        int validity = WebPGetInfo(webPData.bytes, webPData.size, &w, &h);
         if (validity) {
-            Log.traceln("[smx/dec] preemptive decoding succeeded for %s", applet);
+            Log.traceln("[smx/dec] preemptive decoding succeeded for %s",
+                        applet);
             newApplet = true;
             hasApplet = true;
             return 1;
@@ -151,7 +138,7 @@ void updateLux() {
     tsl.getEvent(&event);
     luxLevel = event.light;
     if (luxLevel > 10) {
-        desiredBrightness = 200;
+        desiredBrightness = 100;
     } else if (luxLevel > 0) {
         desiredBrightness = 30;
     } else {
@@ -235,6 +222,7 @@ void onMqttMessage(char *topic, char *payload,
         deserializeJson(docIn, payload);
         const char *command = docIn["command"];
         if (strcmp(command, "send_app_graphic") == 0) {
+            pushingAppletFile.close();
             pushingAppletID = atoi(docIn["params"]["appid"]);
 
             sprintf(tmpFileName, "/app/%d.webp.tmp", pushingAppletID);
@@ -291,7 +279,6 @@ void onMqttMessage(char *topic, char *payload,
             Log.traceln("[smx/applet] receiving %d bytes for %d", (int)total,
                         pushingAppletID);
         }
-        pushingAppletFile.seek(index);
         pushingAppletFile.write((uint8_t *)payload, len);
         if (index + len >= total) {
             Log.traceln("[smx/applet] stored %d bytes for %d", (int)total,
@@ -390,17 +377,15 @@ void matrixLoop(void *parameter) {
     int lastFrameTimestamp = 0;
     int currentFrame = 0;
     int errorCount = 0;
-    WebPAnimDecoderOptions dec_options;
-    WebPAnimDecoderOptionsInit(&dec_options);
-    WebPAnimDecoder *dec = NULL;
+
     for (;;) {
         if (hasApplet) {
-            if (newApplet && webPData != nullptr) {
+            if (newApplet && webPData.bytes != 0) {
                 Log.traceln("[smx/display] new applet");
                 newApplet = false;
                 WebPAnimDecoderDelete(dec);
-                dec = WebPAnimDecoderNew(webPData, &dec_options);
-                if(dec == NULL) {
+                dec = WebPAnimDecoderNew(&webPData, NULL);
+                if (dec == NULL) {
                     hasApplet = false;
                     continue;
                 }
@@ -424,9 +409,9 @@ void matrixLoop(void *parameter) {
                             int px = 0;
                             for (int y = 0; y < MATRIX_HEIGHT; y++) {
                                 for (int x = 0; x < MATRIX_WIDTH; x++) {
-                                    matrix->writePixel(
+                                    matrix.writePixel(
                                         x, y,
-                                        matrix->color565(buf[px * 4],
+                                        matrix.color565(buf[px * 4],
                                                          buf[px * 4 + 1],
                                                          buf[px * 4 + 2]));
 
@@ -441,12 +426,14 @@ void matrixLoop(void *parameter) {
                         } else {
                             Log.errorln("[smx/display] decode error for %d",
                                         currentAppletID);
+                            char appletName[20];
+                            sprintf(appletName, "app/%d", currentAppletID);
+                            showAppletAsync(appletName);
                             errorCount++;
                             if (errorCount > 3) {
-                                forceUpdateApplet(currentAppletID);
                                 currentAppletExecutionStartTime = 0;
-                                hasApplet = false;
                             }
+                            hasApplet = false;
                         }
                     }
                 }
@@ -457,7 +444,7 @@ void matrixLoop(void *parameter) {
             newStatusApplet = false;
             showApplet(asyncAppletName);
         }
-        
+
         vTaskDelay(30);
     }
 }
@@ -466,17 +453,7 @@ void setup() {
     Serial.begin(115200);
     Log.begin(LOG_LEVEL_VERBOSE, &Serial);
     Log.noticeln("[smx/setup] starting up");
-    HUB75_I2S_CFG::i2s_pins _pins = {25, 26, 27, 14, 12, 13, 23,
-                                     19, 5,  17, -1, 4,  15, 16};
-    HUB75_I2S_CFG mxconfig(64, 32, 1, _pins);
-    mxconfig.i2sspeed = HUB75_I2S_CFG::clk_speed::HZ_8M;
-    mxconfig.min_refresh_rate = 30;
-    mxconfig.setPixelColorDepthBits(6);
-
-    matrix = new MatrixPanel_I2S_DMA(mxconfig);
-    matrix->begin();
-
-    Log.traceln("[smx/setup] matrix begin");
+    matrix.begin();
 
     Wire.begin();
     if (!LittleFS.begin(true)) {
@@ -499,12 +476,12 @@ void setup() {
 
     wifiManager.setDebugOutput(false);
 
-    matrix->setBrightness8(desiredBrightness);  // 0-255
-    matrix->clearScreen();
+    matrix.setBrightness8(desiredBrightness);  // 0-255
+    matrix.clearScreen();
 
     xTaskCreatePinnedToCore(matrixLoop,   /* Function to implement the task */
                             "MatrixTask", /* Name of the task */
-                            3500,         /* Stack size in words */
+                            5000,         /* Stack size in words */
                             NULL,         /* Task input parameter */
                             30,           /* Priority of the task */
                             &matrixTask,  /* Task handle. */
@@ -576,7 +553,7 @@ void loop() {
         }
     }
 
-    if (millis() - lastReportHeapTime > 10000) {
+    if (millis() - lastReportHeapTime > 5000) {
         lastReportHeapTime = millis();
         docOut.garbageCollect();
         docIn.garbageCollect();
@@ -619,7 +596,7 @@ void loop() {
         } else {
             currentBrightness++;
         }
-        matrix->setBrightness8(currentBrightness);
+        matrix.setBrightness8(currentBrightness);
         lastAdjustBrightnessTime = millis();
     }
 
@@ -662,7 +639,6 @@ void loop() {
                 pinStates[i] = item["p"];
                 i++;
             }
-
 
             scheduleFile.close();
             LittleFS.rename("/app/schedule.json.tmp", "/app/schedule.json");
