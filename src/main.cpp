@@ -24,9 +24,29 @@ extern "C" {
 
 const char *manifestURL =
     "http://pub-34eaf0d2dcbb40c396065db28dcc4418.r2.dev/manifest.json";
+#ifdef TIDBYT
+// Change these to whatever suits
+#define R1_PIN 21
+#define G1_PIN 2
+#define B1_PIN 22
+#define R2_PIN 23
+#define G2_PIN 4
+#define B2_PIN 27
+#define A_PIN 26
+#define B_PIN 5
+#define C_PIN 25
+#define D_PIN 18
+#define E_PIN -1 // required for 1/32 scan panels, like 64x64px. Any available pin would do, i.e. IO32
+#define LAT_PIN 19
+#define OE_PIN 32
+#define CLK_PIN 33
 
+HUB75_I2S_CFG::i2s_pins _pins={R1_PIN, G1_PIN, B1_PIN, R2_PIN, G2_PIN, B2_PIN, A_PIN, B_PIN, C_PIN, D_PIN, E_PIN, LAT_PIN, OE_PIN, CLK_PIN};
+
+#else
 HUB75_I2S_CFG::i2s_pins _pins = {25, 26, 27, 14, 12, 13, 23,
                                  19, 5,  17, -1, 4,  15, 16};
+#endif
 HUB75_I2S_CFG mxconfig(64, 32, 1, _pins);
 MatrixPanel_I2S_DMA matrix = MatrixPanel_I2S_DMA(mxconfig);
 
@@ -532,7 +552,10 @@ void setup() {
     client.onDisconnect(onMqttDisconnect);
     client.onMessage(onMqttMessage);
     client.setServer(MQTT_HOST, MQTT_PORT);
-    client.setCredentials(MQTT_USERNAME, MQTT_PASSWORD);
+    // only set password if they are not blank
+    if (String(MQTT_USERNAME).length() > 0) {
+        client.setCredentials(MQTT_USERNAME, MQTT_PASSWORD);
+    }
 }
 
 unsigned long lastReportHeapTime = 0;
