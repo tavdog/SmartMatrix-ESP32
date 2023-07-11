@@ -474,6 +474,10 @@ void setup() {
     Log.begin(LOG_LEVEL_VERBOSE, &Serial);
     Log.noticeln("[smx/setup] starting up");
     matrix.begin();
+    matrix.setBrightness8(currentBrightness); // 0-255
+    matrix.setLatBlanking(1);
+    matrix.clearScreen();
+    //marqueeText("SmartMx", matrix.color565(0, 255, 255));
 
     Wire.begin();
     if (!LittleFS.begin(true)) {
