@@ -155,7 +155,7 @@ int showApplet(const char *applet) {
 
 void updateLux() {
     sensors_event_t event;
-    tsl.getEvent(&event);
+    //tsl.getEvent(&event);
     luxLevel = event.light;
     if (luxLevel > 10) {
         desiredBrightness = 100;
@@ -490,13 +490,13 @@ void setup() {
 
     Log.traceln("[smx/setup] ota manifest: %s", manifestURL);
 
-    tslEnabled = tsl.begin();
-    if (tslEnabled) {
-        Log.traceln("[smx/setup] tsl enabled");
-        updateLux();
-        tsl.enableAutoRange(true);
-        tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
-    }
+    // tslEnabled = tsl.begin();
+    // if (tslEnabled) {
+    //     Log.traceln("[smx/setup] tsl enabled");
+    //     updateLux();
+    //     tsl.enableAutoRange(true);
+    //     tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
+    // }
 
     wifiManager.setDebugOutput(false);
 
