@@ -25,29 +25,40 @@ extern "C" {
 const char *manifestURL =
     "http://pub-34eaf0d2dcbb40c396065db28dcc4418.r2.dev/manifest.json";
 #ifdef TIDBYT
-// Change these to whatever suits
-#define R1_PIN 21
-#define G1_PIN 2
-#define B1_PIN 22
-#define R2_PIN 23
-#define G2_PIN 4
-#define B2_PIN 27
-#define A_PIN 26
-#define B_PIN 5
-#define C_PIN 25
-#define D_PIN 18
-#define E_PIN -1 // required for 1/32 scan panels, like 64x64px. Any available pin would do, i.e. IO32
-#define LAT_PIN 19
-#define OE_PIN 32
-#define CLK_PIN 33
 
-HUB75_I2S_CFG::i2s_pins _pins={R1_PIN, G1_PIN, B1_PIN, R2_PIN, G2_PIN, B2_PIN, A_PIN, B_PIN, C_PIN, D_PIN, E_PIN, LAT_PIN, OE_PIN, CLK_PIN};
-//HUB75_I2S_CFG::i2s_pins _pins = {2, 22, 21, 4, 27, 23, 26, 5, 25, 18, -1, 19, 32, 33}; // what actually works for me
+#define R1 21
+#define G1 2
+#define BL1 22
+#define R2 23
+#define G2 4
+#define BL2 27
+
+#define CH_A 26
+#define CH_B 5
+#define CH_C 25
+#define CH_D 18
+#define CH_E -1 // assign to pin 14 if using more than two panels
+
+#define LAT 19
+#define OE 32
+#define CLK 33
+
+// Initialize the panel.
+HUB75_I2S_CFG::i2s_pins _pins = {R1, G1, BL1, R2, G2, BL2, CH_A,
+                                CH_B, CH_C, CH_D, CH_E, LAT, OE, CLK};
+HUB75_I2S_CFG mxconfig(64,                     // width
+                       32,                     // height
+                       1,                      // chain length
+                       _pins,                   // pin mapping
+                       HUB75_I2S_CFG::FM6126A, // driver chip
+                       true,                   // double-buffering
+                       HUB75_I2S_CFG::HZ_10M);
 #else
 HUB75_I2S_CFG::i2s_pins _pins = {25, 26, 27, 14, 12, 13, 23,
                                  19, 5,  17, -1, 4,  15, 16};
-#endif
 HUB75_I2S_CFG mxconfig(64, 32, 1, _pins);
+#endif
+
 MatrixPanel_I2S_DMA matrix = MatrixPanel_I2S_DMA(mxconfig);
 
 Adafruit_TSL2561_Unified tsl =
@@ -471,12 +482,17 @@ void matrixLoop(void *parameter) {
 
 void setup() {
     Serial.begin(115200);
+    delay(10000);
     Log.begin(LOG_LEVEL_VERBOSE, &Serial);
     Log.noticeln("[smx/setup] starting up");
-    matrix.begin();
-    matrix.setBrightness8(currentBrightness); // 0-255
-    matrix.setLatBlanking(1);
+    if (!matrix.begin()) {
+        Log.errorln("[smx/setup] matrix begin failed");
+    }
+    Log.errorln("[smx/setup] matrix begine succeeded");
+    matrix.fillScreenRGB888(0, 0, 0);
+    Log.errorln("[smx/setup] blanking screen");
     matrix.clearScreen();
+    matrix.setBrightness8(currentBrightness); // 0-255
     //marqueeText("SmartMx", matrix.color565(0, 255, 255));
 
     Wire.begin();
