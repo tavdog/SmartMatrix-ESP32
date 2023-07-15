@@ -11,8 +11,8 @@ except:
 
 topic = "plm/83F228/rx" # CHANGE ME
 mqttClient = mqtt.Client("python_mqtt")
-mqttClient.username_pw_set("publish_user", 'pazz') # CHANGE ME
-mqttClient.connect('SERVER', 1883) # CHANGE ME
+#mqttClient.username_pw_set("publish_user", 'pazz') # CHANGE ME
+mqttClient.connect('tdm.wildc.net', 1883) # CHANGE ME
 mqttClient.loop_start()
 
 exists = os.path.isfile(image_filename)
