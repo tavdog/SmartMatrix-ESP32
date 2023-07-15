@@ -44,8 +44,8 @@ const char *manifestURL =
 #define CLK 33
 
 // Initialize the panel.
-HUB75_I2S_CFG::i2s_pins _pins = {R1, G1, BL1, R2, G2, BL2, CH_A,
-                                CH_B, CH_C, CH_D, CH_E, LAT, OE, CLK};
+//HUB75_I2S_CFG::i2s_pins _pins = {R1, G1, BL1, R2, G2, BL2, CH_A, CH_B, CH_C, CH_D, CH_E, LAT, OE, CLK};
+  HUB75_I2S_CFG::i2s_pins _pins = { 2, 22,  21,  4, 27,  23,   26,    5,   25,   18,   -1,  19, 32, 33}; // what actually works for me
 HUB75_I2S_CFG mxconfig(64,                     // width
                        32,                     // height
                        1,                      // chain length
@@ -78,7 +78,7 @@ static uint8_t decBuffer[4 * MATRIX_WIDTH * MATRIX_HEIGHT];
 static WebPData webPData;
 WebPAnimDecoder *dec = NULL;
 
-int desiredBrightness = 100;
+int desiredBrightness = 50;
 int currentBrightness = 100;
 
 bool newApplet;
@@ -165,16 +165,16 @@ int showApplet(const char *applet) {
 }
 
 void updateLux() {
-    sensors_event_t event;
-    //tsl.getEvent(&event);
-    luxLevel = event.light;
-    if (luxLevel > 10) {
-        desiredBrightness = 100;
-    } else if (luxLevel > 0) {
-        desiredBrightness = 30;
-    } else {
-        desiredBrightness = 0;
-    }
+    // sensors_event_t event;
+    // //tsl.getEvent(&event);
+    // luxLevel = event.light;
+    // if (luxLevel > 10) {
+    //     desiredBrightness = 100;
+    // } else if (luxLevel > 0) {
+    //     desiredBrightness = 30;
+    // } else {
+    //     desiredBrightness = 0;
+    //}
 }
 
 void showAppletAsync(const char *applet) {
@@ -449,6 +449,9 @@ void matrixLoop(void *parameter) {
                                     px++;
                                 }
                             }
+                            delay(1000);
+                            matrix.clearScreen();
+                            delay(1000);
                             currentFrame++;
                             if (!WebPAnimDecoderHasMoreFrames(dec)) {
                                 currentFrame = 0;
@@ -482,7 +485,6 @@ void matrixLoop(void *parameter) {
 
 void setup() {
     Serial.begin(115200);
-    delay(10000);
     Log.begin(LOG_LEVEL_VERBOSE, &Serial);
     Log.noticeln("[smx/setup] starting up");
     if (!matrix.begin()) {
@@ -491,7 +493,6 @@ void setup() {
     Log.errorln("[smx/setup] matrix begine succeeded");
     matrix.fillScreenRGB888(0, 0, 0);
     Log.errorln("[smx/setup] blanking screen");
-    matrix.clearScreen();
     matrix.setBrightness8(currentBrightness); // 0-255
     //marqueeText("SmartMx", matrix.color565(0, 255, 255));
 
