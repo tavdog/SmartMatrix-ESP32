@@ -6,8 +6,8 @@ extern "C" {
 #include "freertos/timers.h"
 }
 
-#include <Adafruit_Sensor.h>
-#include <Adafruit_TSL2561_U.h>
+//#include <Adafruit_Sensor.h>
+//#include <Adafruit_TSL2561_U.h>
 #include <ArduinoJson.h>
 #include <AsyncMqtt_Generic.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
@@ -22,30 +22,11 @@ extern "C" {
 #include "LittleFS.h"
 #include "secrets.h"
 
-const char *manifestURL =
-    "http://pub-34eaf0d2dcbb40c396065db28dcc4418.r2.dev/manifest.json";
 #ifdef TIDBYT
 
-#define R1 21
-#define G1 2
-#define BL1 22
-#define R2 23
-#define G2 4
-#define BL2 27
-
-#define CH_A 26
-#define CH_B 5
-#define CH_C 25
-#define CH_D 18
-#define CH_E -1 // assign to pin 14 if using more than two panels
-
-#define LAT 19
-#define OE 32
-#define CLK 33
-
 // Initialize the panel.
-//HUB75_I2S_CFG::i2s_pins _pins = {R1, G1, BL1, R2, G2, BL2, CH_A, CH_B, CH_C, CH_D, CH_E, LAT, OE, CLK};
-  HUB75_I2S_CFG::i2s_pins _pins = { 2, 22,  21,  4, 27,  23,   26,    5,   25,   18,   -1,  19, 32, 33}; // what actually works for me
+//HUB75_I2S_CFG::i2s_pins _pins = {21, 2, 22, 23, 4, 27, 26, 5, 25, 18, -1, 19, 32, 33}; // newer model
+HUB75_I2S_CFG::i2s_pins _pins = {2, 22, 21, 4, 27, 23, 26, 5, 25, 18, -1, 19, 32, 33}; // older model
 HUB75_I2S_CFG mxconfig(64,                     // width
                        32,                     // height
                        1,                      // chain length
@@ -61,9 +42,6 @@ HUB75_I2S_CFG mxconfig(64, 32, 1, _pins);
 
 MatrixPanel_I2S_DMA matrix = MatrixPanel_I2S_DMA(mxconfig);
 
-Adafruit_TSL2561_Unified tsl =
-    Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
-
 char hostName[18];
 char appletTopic[26];
 char statusTopic[26];
@@ -78,7 +56,7 @@ static uint8_t decBuffer[4 * MATRIX_WIDTH * MATRIX_HEIGHT];
 static WebPData webPData;
 WebPAnimDecoder *dec = NULL;
 
-int desiredBrightness = 50;
+int desiredBrightness = 100;
 int currentBrightness = 100;
 
 bool newApplet;
@@ -162,19 +140,6 @@ int showApplet(const char *applet) {
         Log.warningln("[smx/dec] %s not found", applet);
         return 0;
     }
-}
-
-void updateLux() {
-    // sensors_event_t event;
-    // //tsl.getEvent(&event);
-    // luxLevel = event.light;
-    // if (luxLevel > 10) {
-    //     desiredBrightness = 100;
-    // } else if (luxLevel > 0) {
-    //     desiredBrightness = 30;
-    // } else {
-    //     desiredBrightness = 0;
-    //}
 }
 
 void showAppletAsync(const char *applet) {
@@ -440,18 +405,11 @@ void matrixLoop(void *parameter) {
                             int px = 0;
                             for (int y = 0; y < MATRIX_HEIGHT; y++) {
                                 for (int x = 0; x < MATRIX_WIDTH; x++) {
-                                    matrix.writePixel(
-                                        x, y,
-                                        matrix.color565(buf[px * 4],
-                                                         buf[px * 4 + 1],
-                                                         buf[px * 4 + 2]));
-
+                                    matrix.drawPixelRGB888(
+                                        x, y, buf[px * 4], buf[px * 4 + 1], buf[px * 4 + 2]);
                                     px++;
                                 }
                             }
-                            delay(1000);
-                            matrix.clearScreen();
-                            delay(1000);
                             currentFrame++;
                             if (!WebPAnimDecoderHasMoreFrames(dec)) {
                                 currentFrame = 0;
@@ -485,38 +443,25 @@ void matrixLoop(void *parameter) {
 
 void setup() {
     Serial.begin(115200);
+    delay(5000);
     Log.begin(LOG_LEVEL_VERBOSE, &Serial);
     Log.noticeln("[smx/setup] starting up");
     if (!matrix.begin()) {
         Log.errorln("[smx/setup] matrix begin failed");
     }
-    Log.errorln("[smx/setup] matrix begine succeeded");
-    matrix.fillScreenRGB888(0, 0, 0);
-    Log.errorln("[smx/setup] blanking screen");
-    matrix.setBrightness8(currentBrightness); // 0-255
+    //Log.errorln("[smx/setup] blanking screen");
+    //matrix.setBrightness8(currentBrightness); // 0-255
     //marqueeText("SmartMx", matrix.color565(0, 255, 255));
 
-    Wire.begin();
+    //Wire.begin();
     if (!LittleFS.begin(true)) {
         Log.errorln("[smx/setup] couldn't init littlefs");
         ESP.restart();
     }
 
     LittleFS.mkdir("/app");
-    esp32FOTA.setManifestURL(manifestURL);
-
-    Log.traceln("[smx/setup] ota manifest: %s", manifestURL);
-
-    // tslEnabled = tsl.begin();
-    // if (tslEnabled) {
-    //     Log.traceln("[smx/setup] tsl enabled");
-    //     updateLux();
-    //     tsl.enableAutoRange(true);
-    //     tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
-    // }
-
+ 
     wifiManager.setDebugOutput(false);
-
     matrix.setBrightness8(desiredBrightness);  // 0-255
     matrix.clearScreen();
 
@@ -577,6 +522,7 @@ void setup() {
     if (String(MQTT_USERNAME).length() > 0) {
         client.setCredentials(MQTT_USERNAME, MQTT_PASSWORD);
     }
+    Log.noticeln("[smx/setup] out of setup");
 }
 
 unsigned long lastReportHeapTime = 0;
@@ -626,23 +572,23 @@ void loop() {
         publish(statusTopic, jsonMessageBuf);
     }
 
-    // Update lux level
-    if (millis() - lastTSLCheckTime > 1000 && tslEnabled) {
-        updateLux();
-        lastTSLCheckTime = millis();
-    }
+    // // Update lux level
+    // if (millis() - lastTSLCheckTime > 1000 && tslEnabled) {
+    //     updateLux();
+    //     lastTSLCheckTime = millis();
+    // }
 
     // Update display brightness
-    if (millis() - lastAdjustBrightnessTime > 10 &&
-        currentBrightness != desiredBrightness) {
-        if (currentBrightness > desiredBrightness) {
-            currentBrightness--;
-        } else {
-            currentBrightness++;
-        }
-        matrix.setBrightness8(currentBrightness);
-        lastAdjustBrightnessTime = millis();
-    }
+    // if (millis() - lastAdjustBrightnessTime > 10 &&
+    //     currentBrightness != desiredBrightness) {
+    //     if (currentBrightness > desiredBrightness) {
+    //         currentBrightness--;
+    //     } else {
+    //         currentBrightness++;
+    //     }
+    //     matrix.setBrightness8(currentBrightness);
+    //     lastAdjustBrightnessTime = millis();
+    // }
 
     // decode schedule
     if (needToDecodeSchedule && client.connected()) {
