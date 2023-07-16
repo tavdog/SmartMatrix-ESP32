@@ -5,15 +5,17 @@ extern "C" {
 #include "freertos/FreeRTOS.h"
 #include "freertos/timers.h"
 }
-
+#ifndef TIDBYT
 #include <Adafruit_Sensor.h>
 #include <Adafruit_TSL2561_U.h>
+#include <Wire.h>
+#endif
+
 #include <ArduinoJson.h>
 #include <AsyncMqtt_Generic.h>
 #include <ESP32-HUB75-MatrixPanel-I2S-DMA.h>
 #include <FS.h>
 #include <WiFiManager.h>
-#include <Wire.h>
 #include <webp/decode.h>
 #include <webp/demux.h>
 
@@ -25,13 +27,23 @@ extern "C" {
 const char *manifestURL =
     "http://pub-34eaf0d2dcbb40c396065db28dcc4418.r2.dev/manifest.json";
 
+<<<<<<< Updated upstream
 HUB75_I2S_CFG::i2s_pins _pins = {25, 26, 27, 14, 12, 13, 23,
                                  19, 5,  17, -1, 4,  15, 16};
+=======
+#ifdef TIDBYT
+HUB75_I2S_CFG::i2s_pins _pins = {2, 22, 21, 4, 27, 23, 26, 5, 25, 18, -1, 19, 32, 33}; // what actually works for me
+#else
+HUB75_I2S_CFG::i2s_pins _pins = {25, 26, 27, 14, 12, 13, 23, 19, 5,  17, -1, 4,  15, 16}; // library default
+#endif
+>>>>>>> Stashed changes
 HUB75_I2S_CFG mxconfig(64, 32, 1, _pins);
 MatrixPanel_I2S_DMA matrix = MatrixPanel_I2S_DMA(mxconfig);
 
+#ifndef TIDBYT
 Adafruit_TSL2561_Unified tsl =
     Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 12345);
+#endif
 
 char hostName[18];
 char appletTopic[26];
@@ -133,6 +145,7 @@ int showApplet(const char *applet) {
     }
 }
 
+#ifndef TIDBYT
 void updateLux() {
     sensors_event_t event;
     tsl.getEvent(&event);
@@ -145,6 +158,7 @@ void updateLux() {
         desiredBrightness = 0;
     }
 }
+#endif
 
 void showAppletAsync(const char *applet) {
     strcpy(asyncAppletName, applet);
@@ -454,8 +468,9 @@ void setup() {
     Log.begin(LOG_LEVEL_VERBOSE, &Serial);
     Log.noticeln("[smx/setup] starting up");
     matrix.begin();
-
+#ifndef TIDBYT
     Wire.begin();
+#endif
     if (!LittleFS.begin(true)) {
         Log.errorln("[smx/setup] couldn't init littlefs");
         ESP.restart();
@@ -466,6 +481,7 @@ void setup() {
 
     Log.traceln("[smx/setup] ota manifest: %s", manifestURL);
 
+#ifndef TIDBYT
     tslEnabled = tsl.begin();
     if (tslEnabled) {
         Log.traceln("[smx/setup] tsl enabled");
@@ -473,6 +489,7 @@ void setup() {
         tsl.enableAutoRange(true);
         tsl.setIntegrationTime(TSL2561_INTEGRATIONTIME_13MS);
     }
+#endif
 
     wifiManager.setDebugOutput(false);
 
@@ -582,11 +599,13 @@ void loop() {
         publish(statusTopic, jsonMessageBuf);
     }
 
+#ifndef TIDBYT
     // Update lux level
     if (millis() - lastTSLCheckTime > 1000 && tslEnabled) {
         updateLux();
         lastTSLCheckTime = millis();
     }
+#endif
 
     // Update display brightness
     if (millis() - lastAdjustBrightnessTime > 10 &&
