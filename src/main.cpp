@@ -67,9 +67,11 @@ Adafruit_TSL2561_Unified tsl = Adafruit_TSL2561_Unified(TSL2561_ADDR_FLOAT, 1234
 
 boolean newapplet = false;
 
+char device_name[25] = "skidbyt_1";
 char hostName[80];
 char applet_topic[22];
 char applet_rts_topic[26];
+char heap_topic[26];
 char brightness_topic[22];
 char lastProgText[12];
 
@@ -131,14 +133,14 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             tmpbuf = (uint8_t *) malloc(bufsize);
             recv_length = true;
             client.publish(applet_rts_topic, "OK");
-            Serial.println("got length");
+            // Serial.println("got length");
 
         } else {
             if(strncmp((char *)payload,"FINISH",6) == 0) {
                 mqtt_timeout_lastTime = 0;
                 Serial.println("got finish");
                 if (strncmp((const char*)tmpbuf, "RIFF", 4) == 0) {
-                    Serial.println("got riff");
+                    // Serial.println("got riff");
                     //Clear and reset all libwebp buffers.
                     WebPDataClear(&webp_data);
                     WebPDemuxReleaseIterator(&iter);
@@ -166,20 +168,51 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                 mqtt_timeout_lastTime = millis();
                 memcpy((void *)(tmpbuf+bufferPos), payload, length);
                 bufferPos += length;
-                Serial.println("got data");
-                client.publish(applet_rts_topic, "OK");
+                // Serial.println("got data");
+                // client.publish(applet_rts_topic, "OK");
+                char heap[50]; // Ensure this is large enough
+                int h = ESP.getFreeHeap();
+                snprintf(heap, sizeof(heap), "%d", heap);
+                Serial.println(heap);
+                client.publish(heap_topic, heap);
             }
         }
+    } else if(strcmp(topic, brightness_topic) == 0 ) { // 1 - 9 brightness
+        char str[2]; // 1 characters + null terminator
+        str[0] = payload[0];
+        str[1] = '\0'; // Null-terminate the string
+
+        int single = atoi(str); // Convert the string to an integer
+        desiredBrightness = map(single,0,9,0,100);
+        // String str = String((char *)payload).substring(0,2);
+        // Serial.println(str);
+        // desiredBrightness = str.toInt();
+        Serial.print("got brightness : ");
+        Serial.println(desiredBrightness);
     }
 }
 
 
 void mqttReconnect() {
-    ESP.restart();
+    if (!client.connected()) {
+        Serial.println("attempting reconnnect");
+        client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
+    } else {
+        Serial.println("mqtt connection recovered");
+    }
+
+    if (client.connected())
+    {
+        Serial.println("Subscribing to : " + String(applet_topic));
+        client.subscribe(applet_topic);
+        client.subscribe(brightness_topic);
+        Serial.println("Publishing MQTT_RECONNECT to : " + String(applet_rts_topic));
+        client.publish(applet_rts_topic, "MQTT_RECONNECT");
+    }
 }
 
 void configModeCallback (WiFiManager *wm) {
-    marqueeText("setup", dma_display.color565(0,255,255));
+    marqueeText("Setup", dma_display.color565(0,255,255));
 }
 
 void setup() {
@@ -190,7 +223,7 @@ void setup() {
     char macFull[6];
     esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
     sprintf(macFull, "%02X%02X%02X", baseMac[3], baseMac[4], baseMac[5]);
-    snprintf(hostName, 11, PSTR("SmX-%s"),macFull);
+    snprintf(hostName, 11, PSTR("Skidbyt-%s"),macFull);
     WiFi.setHostname(hostName);
     WiFi.setAutoReconnect(true);
     WiFi.begin(); 
@@ -199,7 +232,7 @@ void setup() {
     dma_display.setBrightness8(currentBrightness); //0-255
     dma_display.setLatBlanking(1);
     dma_display.clearScreen();
-    marqueeText("SmartMx", dma_display.color565(0,255,255));
+    marqueeText("SkidByt", dma_display.color565(0,255,255));
 
     #ifndef TIDBYT
     Wire.begin();
@@ -256,21 +289,25 @@ void setup() {
     });
 
     ArduinoOTA.begin();
+    snprintf_P(applet_topic, 22, PSTR("%s/img"), device_name);
+    snprintf_P(brightness_topic, 22, PSTR("%s/brightness"), device_name);
+    snprintf_P(applet_rts_topic, 26, PSTR("%s/tx"), device_name);
+    snprintf_P(heap_topic, 26, PSTR("%s/heap"), device_name);
 
-    snprintf_P(applet_topic, 22, PSTR("%s/%s/rx"), TOPIC_PREFIX, macFull);
-    snprintf_P(applet_rts_topic, 26, PSTR("%s/%s/tx"), TOPIC_PREFIX, macFull);
 
     #ifdef MQTT_SSL
     wifiClient.setInsecure();
     #endif
 
     client.setServer(MQTT_HOST, MQTT_PORT);
+    
     client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
     client.setCallback(mqttCallback);
 
     if (client.connected()) {
         Serial.println("Subscribing to : " + String(applet_topic));
         client.subscribe(applet_topic);
+        client.subscribe(brightness_topic);
         Serial.println("Publishing BOOT to : " + String(applet_rts_topic));
         client.publish(applet_rts_topic, "DEVICE_BOOT");
     }
@@ -283,36 +320,20 @@ void loop() {
     while (WiFi.status() != WL_CONNECTED || WiFi.localIP() == IPAddress(0,0,0,0)) {
         WiFi.reconnect();
         marqueeText("Wi-Fi", dma_display.color565(255,0,0));
-        delay(10000);
+        delay(5000);
     }
 
-    client.loop();
 
     ArduinoOTA.handle();
 
     if (!client.connected()) {
-        marqueeText("MQTT", dma_display.color565(255,0,0));
+        // marqueeText("MQTT", dma_display.color565(255,0,0));
+        // delay(5000);
         mqttReconnect();
     }
 
-    #ifndef TIDBYT
+    client.loop();
     //Update desired brightness
-    if (millis() - last_check_tsl_time > 500) {
-        sensors_event_t event;
-        tsl.getEvent(&event);
-
-        if(event.light > 50) {
-            //low brightness
-            desiredBrightness = 80;
-        } else if(event.light > 5) {
-            //low brightness
-            desiredBrightness = 20;
-        } else {
-            desiredBrightness = 0;
-        }
-        
-        last_check_tsl_time = millis();
-    }
 
     if (millis() - last_adjust_brightness_time > 10 && currentBrightness != desiredBrightness) {
         if(currentBrightness > desiredBrightness) {
@@ -323,7 +344,6 @@ void loop() {
         dma_display.setBrightness8(currentBrightness);
         last_adjust_brightness_time = millis();
     }
-    #endif
 
     if (currentMode == APPLET) {
         if(newapplet) {
