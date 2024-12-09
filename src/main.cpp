@@ -122,14 +122,16 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             mqtt_timeout_lastTime = millis();
             recv_length = false;
             bufferPos = 0;
-            Serial.println("got start");
+            Serial.print("got start.");
 
             client.publish(applet_rts_topic, "OK");
         } else if(strncmp((char *)payload,"PING",4) == 0) {
             client.publish(applet_rts_topic, "PONG");
         } else if(!recv_length) {
             mqtt_timeout_lastTime = millis();
+            
             bufsize = atoi((char *)payload);
+            Serial.print("Buff Size: "); Serial.print(bufsize);Serial.print(".");
             tmpbuf = (uint8_t *) malloc(bufsize);
             recv_length = true;
             client.publish(applet_rts_topic, "OK");
@@ -140,7 +142,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                 mqtt_timeout_lastTime = 0;
                 Serial.println("got finish");
                 if (strncmp((const char*)tmpbuf, "RIFF", 4) == 0) {
-                    // Serial.println("got riff");
+                    Serial.print("got riff.");
                     //Clear and reset all libwebp buffers.
                     WebPDataClear(&webp_data);
                     WebPDemuxReleaseIterator(&iter);
@@ -153,28 +155,25 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
                     memcpy((void *)webp_data.bytes, tmpbuf, bufsize);
 
                     //free temporary buffer
+                    // Serial.println("freeing buffer");
                     free(tmpbuf);
 
                     //set display flags!
                     newapplet = true;
                     currentMode = APPLET;
-                    client.publish(applet_rts_topic, "PUSHED");
+                    // client.publish(applet_rts_topic, "PUSHED");
+                    // Serial.println("published PUSHED");
                 } else {
                     client.publish(applet_rts_topic, "DECODE_ERROR");
                 }
                 bufferPos = 0;
                 recv_length = false;
             } else {
+                Serial.print("got data.");
                 mqtt_timeout_lastTime = millis();
                 memcpy((void *)(tmpbuf+bufferPos), payload, length);
                 bufferPos += length;
-                // Serial.println("got data");
                 // client.publish(applet_rts_topic, "OK");
-                char heap[50]; // Ensure this is large enough
-                int h = ESP.getFreeHeap();
-                snprintf(heap, sizeof(heap), "%d", heap);
-                Serial.println(heap);
-                client.publish(heap_topic, heap);
             }
         }
     } else if(strcmp(topic, brightness_topic) == 0 ) { // 1 - 9 brightness
@@ -197,6 +196,7 @@ void mqttReconnect() {
     if (!client.connected()) {
         Serial.println("attempting reconnnect");
         client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
+        delay(1000);
     } else {
         Serial.println("mqtt connection recovered");
     }
@@ -303,8 +303,10 @@ void setup() {
     
     client.connect(hostName, MQTT_USERNAME, MQTT_PASSWORD);
     client.setCallback(mqttCallback);
+    client.setBufferSize(500000); // 500kb
 
-    if (client.connected()) {
+        if (client.connected())
+    {
         Serial.println("Subscribing to : " + String(applet_topic));
         client.subscribe(applet_topic);
         client.subscribe(brightness_topic);
@@ -353,6 +355,11 @@ void loop() {
 
             newapplet = false;
             current_frame = 1;
+            char heap[50]; // Ensure this is large enough
+            int h = ESP.getFreeHeap();
+            snprintf(heap, sizeof(heap), "%d", heap);
+            Serial.print(heap);
+            client.publish(heap_topic, heap);
         } else {
             if(webp_flags & ANIMATION_FLAG) {
                 if(millis() - last_frame_time > last_frame_duration) {
